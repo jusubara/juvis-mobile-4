@@ -422,6 +422,8 @@ export async function runMigrationSeedFltRouteDbIfNeeded(): Promise<void> {
   const rows: { flt_no: string; from_apt: string; to_apt: string; count: number }[] =
     require('../../assets/flt-route-db.json');
 
+  console.log('[Migration] seed_flt_route_db_v1 rows loaded:', rows.length);
+
   await db.withTransactionAsync(async () => {
     for (const row of rows) {
       if (!row.flt_no) continue;

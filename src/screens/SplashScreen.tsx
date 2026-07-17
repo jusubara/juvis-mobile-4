@@ -30,13 +30,19 @@ export default function SplashScreen({ onDone }: { onDone: () => void }) {
     });
 
     anim.start(({ finished }) => {
+      console.log('[SplashScreen] anim.start 콜백, finished:', finished);
       if (finished) {
         setPct(100);
-        setTimeout(onDone, 300);
+        console.log('[SplashScreen] 애니메이션 완료, onDone 300ms 후 호출 예정');
+        setTimeout(() => {
+          console.log('[SplashScreen] onDone 호출됨');
+          onDone();
+        }, 300);
       }
     });
 
     return () => {
+      console.log('[SplashScreen] 컴포넌트 unmount — 화면에서 제거됨');
       progress.removeListener(id);
       anim.stop();
     };

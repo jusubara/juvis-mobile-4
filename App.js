@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet } from 'react-native';
+import { View, Text, StyleSheet, Alert } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import * as SplashScreen from 'expo-splash-screen';
@@ -78,15 +78,15 @@ function AppContent() {
   useEffect(() => {
     (async () => {
       try {
+        console.log('[Splash] init starting...');
         await runMigrationSeedFltRouteDbIfNeeded();
-      } catch (initErr) {
-        console.error('[App] 초기화 오류', initErr?.message ?? String(initErr));
-      } finally {
-        try {
-          await SplashScreen.hideAsync();
-        } catch (e) {
-          console.error('[Splash] hideAsync 오류', e?.message ?? String(e));
-        }
+        console.log('[Splash] init done, hiding...');
+        await SplashScreen.hideAsync();
+        console.log('[Splash] hidden');
+      } catch (err) {
+        console.log('[Splash] ERROR:', err);
+        Alert.alert('초기화 오류', String(err?.message || err));
+        try { await SplashScreen.hideAsync(); } catch {}
       }
     })();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
@@ -105,7 +105,10 @@ function AppContent() {
       <UpdatePopup />
 
       {screen === 'splash' && (
-        <SplashScreen_ onDone={() => setScreen('mainMenu')} />
+        <SplashScreen_ onDone={() => {
+          console.log('[App] splash onDone 수신, 화면 전환');
+          setScreen('mainMenu');
+        }} />
       )}
       {screen === 'mainMenu' && (
         <MainMenuScreen onNavigate={s => setScreen(s)} />

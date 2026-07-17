@@ -79,6 +79,7 @@ function MenuCard({ card, onPress }: { card: CardDef; onPress: () => void }) {
 }
 
 export default function MainMenuScreen({ onNavigate }: { onNavigate: (s: Target) => void }) {
+  console.log('[MainMenuScreen] 렌더링됨 — 메인 메뉴가 화면에 표시 중');
   return (
     <SafeAreaView style={s.safe}>
 
