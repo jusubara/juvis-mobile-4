@@ -1,0 +1,51 @@
+{
+  "expo": {
+    "name": "juvismobile4",
+    "slug": "juvis-mobile-4",
+    "version": "1.1.0",
+    "orientation": "portrait",
+    "icon": "./assets/app-icon-1024.png",
+    "userInterfaceStyle": "light",
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#ffffff"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.jusubara.juvismobile4",
+      "buildNumber": "2",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false,
+        "CFBundleDisplayName": "모바일 파일럿 로그북"
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/pilot-logbook.png",
+        "backgroundColor": "#f0f4f8"
+      },
+      "versionCode": 2,
+      "edgeToEdgeEnabled": true,
+      "package": "com.jusubara.juvismobile4",
+      "allowBackup": false
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "d725398c-b54f-4d86-b5a1-18b804791652"
+      }
+    },
+    "plugins": [
+      "@react-native-community/datetimepicker",
+      "expo-splash-screen",
+      "expo-font",
+      "expo-sqlite"
+    ],
+    "assetBundlePatterns": [
+      "**/*"
+    ]
+  }
+}
