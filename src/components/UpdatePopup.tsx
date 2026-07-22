@@ -27,7 +27,14 @@ export default function UpdatePopup() {
     });
   }, []);
 
-  const handleClose = () => {
+  const handleClose = async () => {
+    console.log('[UpdatePopup] 확인 버튼 눌림');
+    try {
+      await setAppSetting(SETTING_KEY, CURRENT_VERSION);
+      console.log('[UpdatePopup] 확인 - saved version:', CURRENT_VERSION);
+    } catch (e) {
+      console.warn('[UpdatePopup] settings write error:', e);
+    }
     setVisible(false);
   };
 
@@ -40,8 +47,6 @@ export default function UpdatePopup() {
     }
     setVisible(false);
   };
-
-  if (!visible) return null;
 
   const latest = CHANGELOG[0];
 

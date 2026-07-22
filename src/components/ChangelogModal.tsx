@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import Constants from 'expo-constants';
 import {
   View, Text, Modal, TouchableOpacity,
   ScrollView, StyleSheet,
@@ -17,6 +18,40 @@ export interface ChangelogEntry {
 }
 
 export const CHANGELOG: ChangelogEntry[] = [
+  {
+    version: '1.2.1',
+    date: '2026-07-22',
+    changes: [
+      '파일 불러오기를 병합 방식으로 개선 (중복 기록은 확인 후 덮어쓰기/유지하기 선택 가능, 기존 데이터를 삭제하지 않고 안전하게 추가)',
+      'CSV 파일 병합 시 UTC/로컬시간 표기 차이로 인한 날짜 하루 오차도 중복으로 인식하도록 개선 (편명·블록타임 일치 시 날짜 ±1일 허용)',
+    ],
+  },
+  {
+    version: '1.2.0',
+    date: '2026-07-21',
+    changes: [
+      '로그북 리스트에 검색 기능 추가 (편명/기재/출발지/도착지/편조 이름으로 검색 가능)',
+      '빈 로그북 화면에 샘플 데이터로 둘러보기 기능 추가',
+      '업데이트 확인 팝업에서 "확인" 버튼을 눌러도 다음 실행 시 팝업이 다시 뜨던 문제 수정',
+    ],
+  },
+  {
+    version: '1.1.2',
+    date: '2026-07-20',
+    changes: [
+      '빈 로그북 화면에 샘플 데이터로 둘러보기 기능 추가',
+      '업데이트 확인 팝업에서 "확인" 버튼을 눌러도 다음 실행 시 팝업이 다시 뜨던 문제 수정',
+    ],
+  },
+  {
+    version: '1.1.1',
+    date: '2026-07-19',
+    changes: [
+      'CSV 불러오기 시 "SUM"(합계) 행이 연도로 잘못 인식되던 문제 수정',
+      '비행시간 셀 중 IP/TR 컬럼이 좁아서 두 줄로 표시되던 문제 수정',
+      '안드로이드에서 빠른 스크롤 시 진동+정지, 이후 삭제/불러오기 실패하던 문제 수정',
+    ],
+  },
   {
     version: '1.1.0',
     date: '2026-07-16',
@@ -49,15 +84,11 @@ export const CHANGELOG: ChangelogEntry[] = [
   },
 ];
 
-export const CURRENT_VERSION = CHANGELOG[0].version;
+export const CURRENT_VERSION = Constants.expoConfig?.version ?? '1.0.0';
 
 // ─── 다음 버전에 포함될 예정 항목 (UI에는 미노출) ───────────────────────────
 // 정식 버전 전환 시 CHANGELOG 최상단에 새 entry로 이동할 것
-export const CHANGELOG_PENDING: { date: string; change: string }[] = [
-  { date: '07-17', change: 'CSV 불러오기 시 "SUM"(합계) 행이 연도로 잘못 인식되던 문제 수정' },
-  { date: '07-17', change: '비행시간 셀 중 IP/TR 컬럼이 좁아서 두 줄로 표시되던 문제 수정' },
-  { date: '07-17', change: '안드로이드에서 빠른 스크롤 시 진동+정지, 이후 삭제/불러오기 실패하던 문제 수정' },
-];
+export const CHANGELOG_PENDING: { date: string; change: string }[] = [];
 
 interface Props {
   visible: boolean;

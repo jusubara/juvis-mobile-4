@@ -9,7 +9,12 @@ import { File as EXFile } from 'expo-file-system';
 import * as iconv from 'iconv-lite';
 import { Buffer } from 'buffer';
 import { csvToEntries, ParseResult } from '../lib/csv-parser';
-import { insertEntries, deleteAllEntries } from '../lib/database';
+import {
+  deleteAllEntries,
+  classifyImportEntries, mergeImportEntries,
+  DuplicateEntry,
+} from '../lib/database';
+import ImportConfirmModal from '../components/ImportConfirmModal';
 
 // ─── Encoding-aware file reader ───────────────────────────────────────────────
 // Tries UTF-8 first. If the decoded text contains U+FFFD replacement characters
@@ -91,6 +96,10 @@ export default function ImportScreen({ onBack, onImported }: Props) {
   const [importing, setImporting] = useState(false);
   const [filterYear, setFilterYear] = useState<string>('');
   const [filterMonth, setFilterMonth] = useState<string>('');
+  const [confirmData, setConfirmData] = useState<{
+    newEntries: import('../lib/database').LogbookEntry[];
+    duplicates: DuplicateEntry[];
+  } | null>(null);
 
   // ─── 파싱된 CSV에서 연도/월 목록 ──────────────────────────────────────────
 
@@ -140,6 +149,9 @@ export default function ImportScreen({ onBack, onImported }: Props) {
 
       const parsed = csvToEntries(content);
       console.log('[Import] parsed entries:', parsed.entries.length, 'errors:', parsed.errors);
+      console.log('[Import] sample crew/remark:', parsed.entries.slice(0, 3).map(e => ({
+        flt: e.flt_no, crew: e.crew, remark: e.remark,
+      })));
       // Log sort_order for first 10 entries to verify assignment
       parsed.entries.slice(0, 10).forEach(e =>
         console.log('[Import] row:', e.date, e.flt_no, '→ sort_order:', e.sort_order)
@@ -156,16 +168,50 @@ export default function ImportScreen({ onBack, onImported }: Props) {
     }
   };
 
-  // ─── 가져오기 ─────────────────────────────────────────────────────────────
+  // ─── 가져오기 (병합 방식) ──────────────────────────────────────────────────
 
   const handleImport = async () => {
     if (filteredEntries.length === 0) return;
     setImporting(true);
     try {
-      await insertEntries(filteredEntries);
+      const classified = await classifyImportEntries(filteredEntries);
+      setImporting(false);
+
+      if (classified.duplicates.length === 0) {
+        // 중복 없음 → 바로 삽입
+        setImporting(true);
+        const result = await mergeImportEntries(classified.newEntries, [], false);
+        Alert.alert(
+          '가져오기 완료',
+          `${result.inserted}건 추가됨`,
+          [{ text: '확인', onPress: onImported }]
+        );
+      } else {
+        // 중복 있음 → 확인 모달 표시
+        setConfirmData(classified);
+      }
+    } catch (e) {
+      Alert.alert('오류', `가져오기 실패: ${String(e)}`);
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  const handleMergeConfirm = async (overwrite: boolean) => {
+    if (!confirmData) return;
+    const data = confirmData;
+    setConfirmData(null);
+    setImporting(true);
+    try {
+      const result = await mergeImportEntries(data.newEntries, data.duplicates, overwrite);
+      const kept = overwrite ? 0 : data.duplicates.length;
+      const parts: string[] = [];
+      if (result.inserted > 0) parts.push(`${result.inserted}건 추가됨`);
+      if (result.updated > 0) parts.push(`${result.updated}건 업데이트됨`);
+      if (kept > 0) parts.push(`중복 ${kept}건 유지`);
       Alert.alert(
         '가져오기 완료',
-        `${filteredEntries.length}개 기록을 저장했습니다.`,
+        parts.join(', ') || '완료',
         [{ text: '확인', onPress: onImported }]
       );
     } catch (e) {
@@ -365,6 +411,17 @@ export default function ImportScreen({ onBack, onImported }: Props) {
 
         <View style={{ height: 40 }} />
       </ScrollView>
+
+      {/* ─── 병합 확인 모달 ─── */}
+      {confirmData && (
+        <ImportConfirmModal
+          visible
+          newCount={confirmData.newEntries.length}
+          duplicates={confirmData.duplicates}
+          onKeep={() => handleMergeConfirm(false)}
+          onOverwrite={() => handleMergeConfirm(true)}
+        />
+      )}
     </SafeAreaView>
   );
 }

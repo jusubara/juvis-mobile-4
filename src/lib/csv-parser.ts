@@ -69,7 +69,7 @@ const EXTERNAL_HEADER_MAP: Record<string, keyof LogbookEntry> = {
   'ldg':                  'ld_d',          // 'LDG' landing → day landing
   'out(utc)':             'ramp_out',      // 'OUT(UTC)'
   'in(utc)':              'ramp_in',       // 'IN(UTC)'
-  'crews':                'remark',        // 'CREWS' Korean crew name → remark
+  'crews':                'crew',           // 'CREWS' Korean crew name → crew JSON
   // ── logbook2 web export headers ───────────────────────────────────────────
   'co-pilot':             'cop',           // 'CO-PILOT'
   'apptype':              'app_type',      // 'APP TYPE' after space removal
@@ -79,6 +79,22 @@ const EXTERNAL_HEADER_MAP: Record<string, keyof LogbookEntry> = {
   'ldnight':              'ld_n',          // 'LD NIGHT' after space removal
   'remarks':              'remark',        // old JUVIS / logbook2 uses 'REMARKS'
 };
+
+// ─── Crew string parser ───────────────────────────────────────────────────────
+// Converts FlightLog CREWS column value ("이름/역할 이름/역할 ...") to crew JSON.
+// If the value already starts with '[' it is returned as-is (JUVIS self-export).
+export function parseCrewsColumnValue(val: string): string {
+  const trimmed = val.trim();
+  if (!trimmed) return '';
+  if (trimmed.startsWith('[')) return trimmed;
+  const members = trimmed.split(/\s+/).filter(Boolean).map((item) => {
+    const slash = item.indexOf('/');
+    return slash > 0
+      ? { name: item.slice(0, slash).trim(), duty: item.slice(slash + 1).trim() }
+      : { name: item.trim(), duty: '' };
+  }).filter((m) => m.name);
+  return members.length > 0 ? JSON.stringify(members) : '';
+}
 
 // ─── Unified csvToEntries ─────────────────────────────────────────────────────
 // Handles: JUVIS mobile export, logbook2 web export, FlightLog external format
@@ -188,7 +204,28 @@ export function csvToEntries(csvText: string): ParseResult {
         }
       }
 
-      // Default crew to empty JSON array if not provided
+      // If crew field has raw FlightLog "이름/역할" format (not JSON), convert to JSON
+      const rawCrew = (entry['crew'] as string) ?? '';
+      if (rawCrew && !rawCrew.trim().startsWith('[')) {
+        entry['crew'] = parseCrewsColumnValue(rawCrew);
+      }
+
+      // Fallback: crew가 비어있는데 remark에 "이름/역할" 패턴이 있으면 crew로 이동.
+      // JUVIS self-export를 재불러오는 경우(이전에 remark에 잘못 저장된 데이터)를 처리.
+      if (!entry['crew'] && entry['remark']) {
+        const remarkStr = (entry['remark'] as string).trim();
+        const tokens = remarkStr.split(/[\s,]+/).filter(Boolean);
+        const looksLikeCrew = tokens.some((t) => /^[\uAC00-\uD7A3]{1,5}\/[A-Za-z]{1,3}$/.test(t));
+        if (looksLikeCrew) {
+          const crewJson = parseCrewsColumnValue(remarkStr);
+          if (crewJson) {
+            entry['crew'] = crewJson;
+            entry['remark'] = '';
+          }
+        }
+      }
+
+      // Default crew to empty string if not provided
       if (!entry['crew']) {
         entry['crew'] = '';
       }

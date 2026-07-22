@@ -315,6 +315,181 @@ export async function insertEntries(entries: LogbookEntry[]): Promise<void> {
   });
 }
 
+// ─── Merge-import helpers ─────────────────────────────────────────────────────
+
+export interface DuplicateEntry {
+  incoming: LogbookEntry;
+  existingId: string;
+  existingDate: string;  // DB에 저장된 날짜 (±1일 매칭 시 표시용)
+  dateDiff: number;      // 0 = 정확 일치, ±1 = 하루 차이 (UTC/KST 표기 차이)
+}
+
+export interface MergeImportResult {
+  inserted: number;
+  updated: number;
+}
+
+// ─── 중복 판단 헬퍼 ───────────────────────────────────────────────────────────
+//
+// 규칙: 편명 + 블록타임이 정확히 일치하고, 날짜 차이가 ±1일 이내이면 동일 기록.
+// - block이 다르면 별개 기록으로 처리 (램프리턴 재출발 시나리오).
+// - 날짜 ±1일 허용: UTC/KST 표기 차이 (예: UTC 23:30 출발 → UTC 7/9 vs KST 7/10).
+
+function normalizeFlt(f: string | null | undefined): string {
+  return (f ?? '').trim();
+}
+
+function normalizeBlock(b: string | null | undefined): string {
+  const raw = (b ?? '').trim();
+  const mins = parseTimeToMinutes(raw);
+  return mins > 0 ? minutesToTimeStr(mins) : raw;
+}
+
+function normalizeDate(d: string | null | undefined): string {
+  return (d ?? '').trim().replace(/\//g, '-');
+}
+
+/** YYYY-MM-DD 두 날짜의 차이(일). b - a 순서. 파싱 실패 시 999 반환. */
+function dateDiffDays(dateA: string, dateB: string): number {
+  const a = new Date(dateA);
+  const b = new Date(dateB);
+  if (isNaN(a.getTime()) || isNaN(b.getTime())) return 999;
+  return Math.round((b.getTime() - a.getTime()) / (1000 * 60 * 60 * 24));
+}
+
+export async function classifyImportEntries(
+  incoming: LogbookEntry[]
+): Promise<{ newEntries: LogbookEntry[]; duplicates: DuplicateEntry[] }> {
+  const db = await getDatabase();
+  const rows = await db.getAllAsync<{ id: string; date: string; flt_no: string | null; block: string | null }>(
+    'SELECT id, date, flt_no, block FROM logbook'
+  );
+
+  // Phase 1 map: "date|flt|block" → {id, date}  (정확 일치)
+  const exactMap = new Map<string, { id: string; date: string }>();
+  // Phase 2 map: "flt|block" → [{id, date}]  (날짜 퍼지 매칭용)
+  const fltBlockMap = new Map<string, { id: string; date: string }[]>();
+
+  for (const row of rows) {
+    const d = normalizeDate(row.date);
+    const f = normalizeFlt(row.flt_no);
+    const b = normalizeBlock(row.block);
+    exactMap.set(`${d}|${f}|${b}`, { id: row.id, date: d });
+    const fb = `${f}|${b}`;
+    if (!fltBlockMap.has(fb)) fltBlockMap.set(fb, []);
+    fltBlockMap.get(fb)!.push({ id: row.id, date: d });
+  }
+
+  const newEntries: LogbookEntry[] = [];
+  const duplicates: DuplicateEntry[] = [];
+
+  for (const entry of incoming) {
+    const d = normalizeDate(entry.date);
+    const f = normalizeFlt(entry.flt_no);
+    const b = normalizeBlock(entry.block);
+
+    // Phase 1: 날짜까지 정확 일치
+    const exactHit = exactMap.get(`${d}|${f}|${b}`);
+    if (exactHit) {
+      duplicates.push({ incoming: entry, existingId: exactHit.id, existingDate: exactHit.date, dateDiff: 0 });
+      continue;
+    }
+
+    // Phase 2: 편명+블록 일치 + 날짜 ±1일 (UTC/KST 표기 차이 허용)
+    const candidates = fltBlockMap.get(`${f}|${b}`) ?? [];
+    let best: { id: string; date: string; diff: number } | null = null;
+    for (const cand of candidates) {
+      const diff = dateDiffDays(cand.date, d); // incoming - existing
+      if (Math.abs(diff) === 1) {
+        // ±1일 후보 중 가장 가까운 것 선택 (복수 후보는 드물지만 방어)
+        if (!best || Math.abs(diff) < Math.abs(best.diff)) {
+          best = { id: cand.id, date: cand.date, diff };
+        }
+      }
+    }
+
+    if (best) {
+      console.log(`[Import] ±1일 매칭: ${best.date} ↔ ${d} | ${f} | ${b} (diff=${best.diff})`);
+      duplicates.push({ incoming: entry, existingId: best.id, existingDate: best.date, dateDiff: best.diff });
+    } else {
+      newEntries.push(entry);
+    }
+  }
+
+  console.log(`[Import] classify — new: ${newEntries.length}, duplicates: ${duplicates.length}`);
+  return { newEntries, duplicates };
+}
+
+export async function mergeImportEntries(
+  newEntries: LogbookEntry[],
+  duplicates: DuplicateEntry[],
+  overwrite: boolean
+): Promise<MergeImportResult> {
+  const db = await getDatabase();
+
+  const maxResult = await db.getFirstAsync<{ max_so: number | null }>(
+    'SELECT MAX(sort_order) AS max_so FROM logbook'
+  );
+  let nextSo = (maxResult?.max_so ?? 0) + 1;
+
+  await db.withTransactionAsync(async () => {
+    // 신규 항목: 새 ID와 새 sort_order 부여
+    for (const entry of newEntries) {
+      await db.runAsync(
+        `INSERT INTO logbook
+          (id, date, ac_type, ac_ident, flt_no, from_apt, to_apt,
+           pic, picus, cop, ip, tr, block, night, inst, app_type,
+           to_d, to_n, ld_d, ld_n, remark, crew, ramp_out, ramp_in,
+           sort_order, created_at)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        [
+          generateId(), entry.date ?? null,
+          entry.ac_type ?? null, entry.ac_ident ?? null, entry.flt_no ?? null,
+          entry.from_apt ?? null, entry.to_apt ?? null,
+          entry.pic ?? null, entry.picus ?? null, entry.cop ?? null,
+          entry.ip ?? null, entry.tr ?? null,
+          entry.block ?? null, entry.night ?? null, entry.inst ?? null,
+          entry.app_type ?? null,
+          entry.to_d ?? 0, entry.to_n ?? 0, entry.ld_d ?? 0, entry.ld_n ?? 0,
+          entry.remark ?? null, entry.crew ?? null,
+          entry.ramp_out ?? null, entry.ramp_in ?? null,
+          nextSo++, entry.created_at ?? null,
+        ]
+      );
+    }
+
+    if (overwrite) {
+      // 중복 항목: sort_order 제외 모든 필드를 새 값으로 교체
+      for (const dup of duplicates) {
+        const e = dup.incoming;
+        await db.runAsync(
+          `UPDATE logbook SET
+            date=?, ac_type=?, ac_ident=?, flt_no=?, from_apt=?, to_apt=?,
+            pic=?, picus=?, cop=?, ip=?, tr=?, block=?, night=?, inst=?, app_type=?,
+            to_d=?, to_n=?, ld_d=?, ld_n=?, remark=?, crew=?, ramp_out=?, ramp_in=?
+           WHERE id=?`,
+          [
+            e.date ?? null, e.ac_type ?? null, e.ac_ident ?? null, e.flt_no ?? null,
+            e.from_apt ?? null, e.to_apt ?? null,
+            e.pic ?? null, e.picus ?? null, e.cop ?? null,
+            e.ip ?? null, e.tr ?? null,
+            e.block ?? null, e.night ?? null, e.inst ?? null,
+            e.app_type ?? null,
+            e.to_d ?? 0, e.to_n ?? 0, e.ld_d ?? 0, e.ld_n ?? 0,
+            e.remark ?? null, e.crew ?? null,
+            e.ramp_out ?? null, e.ramp_in ?? null,
+            dup.existingId,
+          ]
+        );
+      }
+    }
+  });
+
+  const result = { inserted: newEntries.length, updated: overwrite ? duplicates.length : 0 };
+  console.log(`[Import] merge done — inserted: ${result.inserted}, updated: ${result.updated}`);
+  return result;
+}
+
 export async function deleteEntry(id: string): Promise<void> {
   const db = await getDatabase();
   await db.runAsync('DELETE FROM logbook WHERE id = ?', [id]);
@@ -441,6 +616,78 @@ export async function runMigrationSeedFltRouteDbIfNeeded(): Promise<void> {
   console.log(`[Migration] seed_flt_route_db_v1 done — ${rows.length} rows in ${Date.now() - t0}ms`);
 }
 
+// ─── One-time migration: move FlightLog crew names from remark → crew JSON ────
+// Existing rows imported from FlightLog CSV have crew names stored in remark
+// (e.g. "김민준/F 이수진/CA"). This migration detects that pattern and moves
+// the value into the crew JSON field, clearing remark.
+
+// Crew remark 패턴: 한글이름/역할코드 토큰이 하나 이상 있으면 crew 문자열로 판단.
+// 구분자는 공백·쉼표 모두 허용. "some" 검사로 부가 텍스트가 섞여도 통과.
+function _looksLikeCrewRemark(s: string): boolean {
+  if (!s || !s.includes('/')) return false;
+  const tokens = s.trim().split(/[\s,]+/).filter(Boolean);
+  // 한글 이름(2-5자) + / + 영문 역할코드(1-3자) 패턴이 하나라도 있으면 true
+  return tokens.some((t) => /^[\uAC00-\uD7A3]{1,5}\/[A-Za-z]{1,3}$/.test(t));
+}
+
+function _parseCrewsValue(val: string): string {
+  const trimmed = val.trim();
+  if (!trimmed) return '';
+  // 공백·쉼표 구분자 모두 지원
+  const members = trimmed.split(/[\s,]+/).filter(Boolean).map((item) => {
+    const slash = item.indexOf('/');
+    return slash > 0
+      ? { name: item.slice(0, slash).trim(), duty: item.slice(slash + 1).trim() }
+      : { name: item.trim(), duty: '' };
+  }).filter((m) => m.name && m.duty); // 이름+역할 모두 있는 것만
+  return members.length > 0 ? JSON.stringify(members) : '';
+}
+
+export async function runMigrationCrewFromRemarkIfNeeded(): Promise<void> {
+  const db = await getDatabase();
+
+  // v2로 버전업 — v1이 0건으로 완료된 경우 재실행 가능하게 함
+  const done = await db.getAllAsync<{ name: string }>(
+    "SELECT name FROM migrations WHERE name = 'crew_from_remark_v2'"
+  );
+  if (done.length > 0) return;
+
+  console.log('[Migration] running crew_from_remark_v2...');
+
+  const rows = await db.getAllAsync<{ id: string; crew: string | null; remark: string | null }>(
+    "SELECT id, crew, remark FROM logbook WHERE (crew IS NULL OR crew = '') AND remark IS NOT NULL AND remark != ''"
+  );
+
+  console.log('[Migration] crew_from_remark_v2 candidates:', rows.length);
+  console.log('[Migration] sample remark values:', rows.slice(0, 5).map(r => r.remark));
+
+  const updates: { id: string; crew: string }[] = [];
+  for (const row of rows) {
+    const remark = row.remark ?? '';
+    if (_looksLikeCrewRemark(remark)) {
+      const crew = _parseCrewsValue(remark);
+      if (crew) updates.push({ id: row.id, crew });
+    }
+  }
+
+  console.log('[Migration] crew_from_remark_v2 will update:', updates.length, 'rows');
+
+  await db.withTransactionAsync(async () => {
+    for (const u of updates) {
+      await db.runAsync(
+        "UPDATE logbook SET crew = ?, remark = '' WHERE id = ?",
+        [u.crew, u.id]
+      );
+    }
+    await db.runAsync(
+      "INSERT INTO migrations (name, run_at) VALUES ('crew_from_remark_v2', ?)",
+      [new Date().toISOString()]
+    );
+  });
+
+  console.log('[Migration] crew_from_remark_v2 complete —', updates.length, 'rows updated');
+}
+
 export async function updateSortOrders(
   items: { id: string; sort_order: number }[]
 ): Promise<void> {
@@ -475,4 +722,62 @@ export async function setAppSetting(key: string, value: string): Promise<void> {
   await db.runAsync(
     `INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)`, [key, value]
   );
+}
+
+// ─── 샘플 데이터 (Apple 심사 대응용 데모) ────────────────────────────────────
+export async function insertSampleData(): Promise<void> {
+  const now = new Date().toISOString();
+  const samples: LogbookEntry[] = [
+    {
+      id: 'sample-0001', date: '2026-01-05',
+      ac_type: 'B738', ac_ident: 'HL8500', flt_no: '101',
+      from_apt: 'ICN', to_apt: 'CJU',
+      pic: '1+05', picus: '', cop: '', ip: '', tr: '',
+      block: '1+05', night: '', inst: '', app_type: '',
+      to_d: 1, to_n: 0, ld_d: 1, ld_n: 0,
+      remark: '', crew: JSON.stringify([{ name: '김민준', duty: 'F' }]),
+      ramp_out: '', ramp_in: '', sort_order: 1, created_at: now,
+    },
+    {
+      id: 'sample-0002', date: '2026-01-05',
+      ac_type: 'B738', ac_ident: 'HL8500', flt_no: '102',
+      from_apt: 'CJU', to_apt: 'ICN',
+      pic: '1+10', picus: '', cop: '', ip: '', tr: '',
+      block: '1+10', night: '', inst: '', app_type: '',
+      to_d: 1, to_n: 0, ld_d: 1, ld_n: 0,
+      remark: '', crew: JSON.stringify([{ name: '김민준', duty: 'F' }]),
+      ramp_out: '', ramp_in: '', sort_order: 2, created_at: now,
+    },
+    {
+      id: 'sample-0003', date: '2026-01-08',
+      ac_type: 'B38M', ac_ident: 'HL8600', flt_no: '501',
+      from_apt: 'ICN', to_apt: 'NRT',
+      pic: '2+15', picus: '', cop: '', ip: '', tr: '',
+      block: '2+15', night: '0+40', inst: '', app_type: '',
+      to_d: 1, to_n: 0, ld_d: 1, ld_n: 0,
+      remark: '', crew: JSON.stringify([{ name: '이서연', duty: 'F' }]),
+      ramp_out: '', ramp_in: '', sort_order: 3, created_at: now,
+    },
+    {
+      id: 'sample-0004', date: '2026-01-08',
+      ac_type: 'B38M', ac_ident: 'HL8600', flt_no: '502',
+      from_apt: 'NRT', to_apt: 'ICN',
+      pic: '2+20', picus: '', cop: '', ip: '', tr: '',
+      block: '2+20', night: '', inst: '', app_type: '',
+      to_d: 1, to_n: 0, ld_d: 1, ld_n: 0,
+      remark: '', crew: JSON.stringify([{ name: '이서연', duty: 'F' }]),
+      ramp_out: '', ramp_in: '', sort_order: 4, created_at: now,
+    },
+    {
+      id: 'sample-0005', date: '2026-01-10',
+      ac_type: 'B738', ac_ident: 'HL8510', flt_no: '205',
+      from_apt: 'GMP', to_apt: 'CJU',
+      pic: '1+00', picus: '', cop: '', ip: '', tr: '',
+      block: '1+00', night: '', inst: '', app_type: '',
+      to_d: 1, to_n: 0, ld_d: 1, ld_n: 0,
+      remark: '', crew: JSON.stringify([{ name: '박지호', duty: 'F' }]),
+      ramp_out: '', ramp_in: '', sort_order: 5, created_at: now,
+    },
+  ];
+  await insertEntries(samples);
 }

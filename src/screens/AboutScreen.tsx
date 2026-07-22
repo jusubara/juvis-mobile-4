@@ -4,7 +4,7 @@ import {
   StyleSheet, ScrollView,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import ChangelogModal from '../components/ChangelogModal';
+import ChangelogModal, { CURRENT_VERSION } from '../components/ChangelogModal';
 
 const RED = '#DC1E28';
 
@@ -24,7 +24,7 @@ export default function AboutScreen({ onBack, onNavigate }: { onBack: () => void
         <Text style={s.line}>Mobile Pilot&apos;s Logbook</Text>
         <View style={s.divider} />
         <Text style={s.label}>버전</Text>
-        <Text style={s.value}>1.1.0</Text>
+        <Text style={s.value}>{CURRENT_VERSION}</Text>
         <Text style={s.label}>개발</Text>
         <Text style={s.value}>파일럿 전용 비행 기록 앱</Text>
         <Text style={s.label}>문의</Text>

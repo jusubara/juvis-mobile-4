@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useMemo, useCallback, useRef } from 'react';
 import {
-  View, Text, TouchableOpacity, StyleSheet, Modal,
+  View, Text, TouchableOpacity, StyleSheet, Modal, TextInput,
   ActivityIndicator, Alert, ScrollView, PanResponder,
   LayoutAnimation, UIManager, Platform, Image, Animated, InteractionManager,
 } from 'react-native';
@@ -19,6 +19,8 @@ import {
   parseTimeToMinutes, minutesToTimeStr, updateSortOrders,
   runMigrationReverseSortOrderIfNeeded,
   runMigrationFixSortOrderGlobalIfNeeded,
+  runMigrationCrewFromRemarkIfNeeded,
+  insertSampleData,
 } from '../lib/database';
 
 
@@ -31,6 +33,10 @@ const TEXT = '#1A1A1A';
 const TEXT_DIM = '#666666';
 const TH_BG = '#EDEDE6';
 const TF_BG = '#DDE4F0';
+
+// ─── Search fields ────────────────────────────────────────────────────────────
+const SEARCH_FIELDS = ['IDENT', 'FLT', 'FROM', 'TO', '편조'] as const;
+type SearchField = typeof SEARCH_FIELDS[number];
 
 // ─── PDF Page size config ─────────────────────────────────────────────────────
 const MM_TO_PT = 2.8346;
@@ -48,7 +54,7 @@ const COL = {
   date: 44, type: 40, ident: 52, flt: 46,
   from: 36, to: 36,
   pic: 42, picus: 42, cop: 42, ip: 36, tr: 36,
-  block: 42, night: 36, inst: 36, app: 76,
+  block: 42, night: 36, inst: 36, app: 100,
   tod: 24, ton: 24, ldd: 24, ldn: 24,
   remark: 100,
 };
@@ -611,6 +617,9 @@ export default function HomeScreen({ onNavigate, onEdit, refreshTrigger }: Props
   const [showPdfModal, setShowPdfModal] = useState(false);
   const [pdfPageSize, setPdfPageSize] = useState<PageSizeKey>('B5');
   const [pdfRowsPerPage, setPdfRowsPerPage] = useState(12);
+  const [searchField, setSearchField] = useState<SearchField>('IDENT');
+  const [searchInput, setSearchInput] = useState('');
+  const [activeQuery, setActiveQuery] = useState('');
 
   const loadAll = useCallback(async () => {
     setLoading(true);
@@ -618,6 +627,7 @@ export default function HomeScreen({ onNavigate, onEdit, refreshTrigger }: Props
       // Run one-time migrations on very first call
       await runMigrationReverseSortOrderIfNeeded();
       await runMigrationFixSortOrderGlobalIfNeeded();
+      await runMigrationCrewFromRemarkIfNeeded();
       const data = await getAllEntries();
       setAllEntries(data);
       if (data.length > 0 && !selectedYear) {
@@ -672,6 +682,32 @@ export default function HomeScreen({ onNavigate, onEdit, refreshTrigger }: Props
     let r = allEntries;
     if (selectedYear) r = r.filter((e) => getYear(e) === selectedYear);
     if (selectedMonth) r = r.filter((e) => getMonth(e) === selectedMonth);
+    if (activeQuery) {
+      const q = activeQuery.toLowerCase();
+      r = r.filter((e) => {
+        switch (searchField) {
+          case 'IDENT': return (e.ac_ident ?? '').toLowerCase().includes(q);
+          case 'FLT':   return (e.flt_no ?? '').toLowerCase().includes(q);
+          case 'FROM':  return (e.from_apt ?? '').toLowerCase().includes(q);
+          case 'TO':    return (e.to_apt ?? '').toLowerCase().includes(q);
+          case '편조': {
+            let crewNames: string[] = [];
+            try {
+              const raw = e.crew;
+              if (raw) {
+                const parsed = JSON.parse(raw) as { name?: string; duty?: string }[];
+                crewNames = Array.isArray(parsed) ? parsed.map((c) => c.name ?? '') : [];
+              }
+            } catch {
+              crewNames = [];
+            }
+            return crewNames.some((name) => name.toLowerCase().includes(q));
+          }
+          default: return true;
+        }
+      });
+      console.log(`[Search] field=${searchField} query="${activeQuery}" → ${r.length}건`);
+    }
     const out = [...r].sort((a, b) => {
       const dateCmp = sortDesc
         ? (b.date ?? '').localeCompare(a.date ?? '')
@@ -683,15 +719,27 @@ export default function HomeScreen({ onNavigate, onEdit, refreshTrigger }: Props
         : (a.sort_order ?? 0) - (b.sort_order ?? 0); // 과거순: 먼저 입력(낮은 so)이 위
     });
     return out;
-  }, [allEntries, selectedYear, selectedMonth, sortDesc]);
+  }, [allEntries, selectedYear, selectedMonth, sortDesc, activeQuery, searchField]);
 
   const totalStats = useMemo(() => calcStats(allEntries), [allEntries]);
   const filteredStats = useMemo(() => calcStats(filteredEntries), [filteredEntries]);
 
-  const isFiltered = selectedYear !== '' || selectedMonth !== '';
-  const filterLabel = selectedYear
-    ? `${selectedYear}${selectedMonth ? `년 ${parseInt(selectedMonth)}월` : '년'}`
-    : '전체';
+  const isFiltered = selectedYear !== '' || selectedMonth !== '' || activeQuery !== '';
+  const filterLabel = (() => {
+    const parts: string[] = [];
+    if (selectedYear) parts.push(`${selectedYear}${selectedMonth ? `년 ${parseInt(selectedMonth)}월` : '년'}`);
+    if (activeQuery) parts.push(`${searchField}:"${activeQuery}"`);
+    return parts.length > 0 ? parts.join(' · ') : '전체';
+  })();
+
+  const handleInsertSample = async () => {
+    try {
+      await insertSampleData();
+      await loadAll();
+    } catch (e) {
+      Alert.alert('오류', `샘플 데이터 삽입 실패: ${String(e)}`);
+    }
+  };
 
   const handleDelete = async (entry: LogbookEntry) => {
     Alert.alert(
@@ -957,6 +1005,39 @@ export default function HomeScreen({ onNavigate, onEdit, refreshTrigger }: Props
               );
             })}
           </ScrollView>
+
+          {/* ─── Search Row ─── */}
+          <View style={s.searchRow}>
+            <Text style={s.filterLabel}>검색</Text>
+            <Dropdown
+              value={searchField}
+              options={[...SEARCH_FIELDS]}
+              onSelect={(v) => setSearchField(v as SearchField)}
+              width={72}
+            />
+            <TextInput
+              style={s.searchInput}
+              value={searchInput}
+              onChangeText={setSearchInput}
+              onSubmitEditing={() => {
+                console.log(`[Search] submit: field=${searchField} query="${searchInput}"`);
+                setActiveQuery(searchInput);
+              }}
+              placeholder="검색어 입력 후 엔터..."
+              placeholderTextColor="#AAAAAA"
+              returnKeyType="search"
+              autoCorrect={false}
+              autoCapitalize="none"
+            />
+            {searchInput.length > 0 && (
+              <TouchableOpacity
+                onPress={() => { setSearchInput(''); setActiveQuery(''); }}
+                style={s.searchClearBtn}
+              >
+                <Text style={s.searchClearText}>✕</Text>
+              </TouchableOpacity>
+            )}
+          </View>
         </View>
 
         {/* ─── Total Stats ─── */}
@@ -988,8 +1069,22 @@ export default function HomeScreen({ onNavigate, onEdit, refreshTrigger }: Props
         {/* ─── Table ─── */}
         {filteredEntries.length === 0 && !loading ? (
           <View style={s.emptyContainer}>
-            <Text style={s.emptyText}>기록이 없습니다.</Text>
-            <Text style={s.emptyHint}>+ 새 기록을 추가하거나 CSV를 불러오세요.</Text>
+            {activeQuery ? (
+              <>
+                <Text style={s.emptyText}>검색 결과가 없습니다.</Text>
+                <Text style={s.emptyHint}>{searchField} 항목에서 "{activeQuery}"를 찾을 수 없습니다.</Text>
+              </>
+            ) : (
+              <>
+                <Text style={s.emptyText}>기록이 없습니다.</Text>
+                <Text style={s.emptyHint}>+ 새 기록을 추가하거나 CSV를 불러오세요.</Text>
+                {allEntries.length === 0 && (
+                  <TouchableOpacity style={s.sampleBtn} onPress={handleInsertSample}>
+                    <Text style={s.sampleBtnText}>샘플 데이터로 둘러보기</Text>
+                  </TouchableOpacity>
+                )}
+              </>
+            )}
           </View>
         ) : (
           <ScrollView horizontal showsHorizontalScrollIndicator>
@@ -1217,6 +1312,14 @@ const s = StyleSheet.create({
   },
   sortBtnText: { fontSize: 11, color: TEXT_DIM, fontWeight: '600' },
   monthRow: { flexDirection: 'row' },
+  searchRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 8 },
+  searchInput: {
+    flex: 1, backgroundColor: BG, borderWidth: 1, borderColor: BORDER,
+    borderRadius: 4, paddingHorizontal: 10, paddingVertical: 6,
+    fontSize: 13, color: TEXT,
+  },
+  searchClearBtn: { padding: 4 },
+  searchClearText: { color: TEXT_DIM, fontSize: 13 },
   monthBtn: {
     paddingHorizontal: 12, paddingVertical: 5, borderRadius: 4,
     borderWidth: 1.5, borderColor: BORDER, backgroundColor: BG, marginRight: 6,
@@ -1309,6 +1412,12 @@ const s = StyleSheet.create({
   emptyContainer: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingTop: 80, gap: 8 },
   emptyText: { color: TEXT_DIM, fontSize: 16 },
   emptyHint: { color: '#AAAAAA', fontSize: 13 },
+  sampleBtn: {
+    marginTop: 16, paddingVertical: 12, paddingHorizontal: 24,
+    borderRadius: 10, borderWidth: 1.5, borderColor: '#3B82F6',
+    backgroundColor: '#EFF6FF',
+  },
+  sampleBtnText: { color: '#1D4ED8', fontSize: 14, fontWeight: '600' },
 
   // Bottom
   bottomBar: {
