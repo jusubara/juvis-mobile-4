@@ -10,6 +10,7 @@ import {
   insertEntry, updateEntry, generateId,
   parseTimeToMinutes, minutesToTimeStr, halfTime,
   lookupRoute, saveRoute, getNextSortOrder, getDistinctIdents,
+  getDistinctCrewNames, getLastDutyForName,
   LogbookEntry,
 } from '../lib/database';
 
@@ -105,7 +106,7 @@ function TimeInput({
     if (mode === 'h') {
       if (hStr.length < 3) {
         setHStr((p) => p + d);
-        if (hStr.length === 0) setMode('mm'); // 첫 자리 입력 후 mm으로 자동 이동
+        setMode('mm'); // 항상 mm으로 자동 이동 (지우고 재입력 시에도 동일하게 적용)
       }
     } else {
       // mm 첫 자리는 0-5만 허용 (60 이상 불가)
@@ -463,8 +464,17 @@ export default function NewEntryScreen({ onBack, onSaved, initialData }: Props) 
   const [pastIdents, setPastIdents] = useState<string[]>([]);
   const [identSugg, setIdentSugg] = useState<string[]>([]);
 
+  // ── Crew 이름 자동완성 ──
+  const [allCrewNames, setAllCrewNames] = useState<string[]>([]);
+  const [crewSuggIdx, setCrewSuggIdx] = useState<number | null>(null);
+  const [crewSuggestions, setCrewSuggestions] = useState<string[]>([]);
+
   useEffect(() => {
     getDistinctIdents().then(setPastIdents).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    getDistinctCrewNames().then(setAllCrewNames).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -537,7 +547,30 @@ export default function NewEntryScreen({ onBack, onSaved, initialData }: Props) 
   // ── Crew ──
   function updateCrew(idx: number, field: keyof CrewMember, val: string) {
     setCrew((prev) => prev.map((c, i) => i === idx ? { ...c, [field]: val } : c));
+    if (field === 'name') {
+      if (val.length >= 2) {
+        const sugg = allCrewNames.filter((n) => n.startsWith(val) && n !== val).slice(0, 6);
+        setCrewSuggIdx(idx);
+        setCrewSuggestions(sugg);
+      } else {
+        setCrewSuggIdx(null);
+        setCrewSuggestions([]);
+      }
+    }
   }
+
+  async function selectCrewSuggestion(idx: number, name: string) {
+    try {
+      const lastDuty = await getLastDutyForName(name);
+      console.log('[CrewSugg] 선택:', name, '→ 마지막 듀티:', lastDuty);
+      setCrew((prev) => prev.map((c, i) => i === idx ? { ...c, name, duty: lastDuty || c.duty } : c));
+    } catch {
+      setCrew((prev) => prev.map((c, i) => i === idx ? { ...c, name } : c));
+    }
+    setCrewSuggIdx(null);
+    setCrewSuggestions([]);
+  }
+
   function addCrewRow() { setCrew((prev) => [...prev, { name: '', duty: '' }]); }
   function removeCrewRow(idx: number) { setCrew((prev) => prev.filter((_, i) => i !== idx)); }
 
@@ -623,19 +656,23 @@ export default function NewEntryScreen({ onBack, onSaved, initialData }: Props) 
             </TouchableOpacity>
             {showDatePicker && (
               <DateTimePicker
-                value={date ? new Date(date) : new Date()}
+                value={date ? (() => { const [y, mo, d] = date.split('-').map(Number); return new Date(y, mo - 1, d); })() : new Date()}
                 mode="date"
                 display={Platform.OS === 'ios' ? 'inline' : 'default'}
                 onChange={(event: DateTimePickerEvent, selected?: Date) => {
+                  console.log('[DatePicker] onChange:', { eventType: event?.type, selected });
+                  if (event.type === 'dismissed') {
+                    setShowDatePicker(false);
+                    return;
+                  }
                   if (Platform.OS === 'android') setShowDatePicker(false);
-                  if (event.type === 'dismissed') { setShowDatePicker(false); return; }
                   if (selected) {
                     const y = selected.getFullYear();
-                    const m = String(selected.getMonth() + 1).padStart(2, '0');
+                    const mo = String(selected.getMonth() + 1).padStart(2, '0');
                     const d = String(selected.getDate()).padStart(2, '0');
-                    const formatted = `${y}-${m}-${d}`;
+                    const formatted = `${y}-${mo}-${d}`;
+                    console.log('[DatePicker] 상태 업데이트 후:', formatted);
                     setDate(formatted);
-                    console.log('[DatePicker] selected:', formatted);
                     if (Platform.OS === 'ios') setShowDatePicker(false);
                   }
                 }}
@@ -866,28 +903,45 @@ export default function NewEntryScreen({ onBack, onSaved, initialData }: Props) 
           <Section title="10. CREW">
             <View style={{ gap: 8 }}>
               {crew.map((c, i) => (
-                <View key={i} style={f.crewRow}>
-                  <TextInput
-                    value={c.name}
-                    onChangeText={(v) => updateCrew(i, 'name', v)}
-                    placeholder="이름"
-                    placeholderTextColor="#BBB"
-                    style={[f.input, { flex: 2 }]}
-                  />
-                  <TouchableOpacity
-                    style={[f.pickerBtn, { flex: 1 }]}
-                    onPress={() => setDutyPickerIdx(i)}
-                  >
-                    <Text style={c.duty ? f.pickerBtnText : f.pickerBtnPlaceholder}>
-                      {c.duty || '듀티'}
-                    </Text>
-                    <Text style={f.pickerArrow}>▾</Text>
-                  </TouchableOpacity>
-                  {crew.length > 1 && (
-                    <TouchableOpacity style={f.crewRemoveBtn} onPress={() => removeCrewRow(i)}>
-                      <Text style={f.crewRemoveBtnText}>×</Text>
+                <View key={i}>
+                  <View style={f.crewRow}>
+                    <View style={{ flex: 2 }}>
+                      <TextInput
+                        value={c.name}
+                        onChangeText={(v) => updateCrew(i, 'name', v)}
+                        placeholder="이름"
+                        placeholderTextColor="#BBB"
+                        style={f.input}
+                      />
+                      {crewSuggIdx === i && crewSuggestions.length > 0 && (
+                        <View style={f.suggBox}>
+                          {crewSuggestions.map((name) => (
+                            <TouchableOpacity
+                              key={name}
+                              style={f.suggItem}
+                              onPress={() => selectCrewSuggestion(i, name)}
+                            >
+                              <Text style={f.suggText}>{name}</Text>
+                            </TouchableOpacity>
+                          ))}
+                        </View>
+                      )}
+                    </View>
+                    <TouchableOpacity
+                      style={[f.pickerBtn, { flex: 1 }]}
+                      onPress={() => setDutyPickerIdx(i)}
+                    >
+                      <Text style={c.duty ? f.pickerBtnText : f.pickerBtnPlaceholder}>
+                        {c.duty || '듀티'}
+                      </Text>
+                      <Text style={f.pickerArrow}>▾</Text>
                     </TouchableOpacity>
-                  )}
+                    {crew.length > 1 && (
+                      <TouchableOpacity style={f.crewRemoveBtn} onPress={() => removeCrewRow(i)}>
+                        <Text style={f.crewRemoveBtnText}>×</Text>
+                      </TouchableOpacity>
+                    )}
+                  </View>
                 </View>
               ))}
             </View>

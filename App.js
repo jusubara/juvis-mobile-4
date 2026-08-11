@@ -1,10 +1,11 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, Alert } from 'react-native';
+import { View, Text, StyleSheet, Alert, BackHandler, Platform, AppState } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import * as SplashScreen from 'expo-splash-screen';
 
 import { runMigrationSeedFltRouteDbIfNeeded } from './src/lib/database';
+import { autoBackup } from './src/lib/autoBackup';
 import UpdatePopup     from './src/components/UpdatePopup';
 import SplashScreen_   from './src/screens/SplashScreen';
 import MainMenuScreen  from './src/screens/MainMenuScreen';
@@ -94,6 +95,37 @@ function AppContent() {
   const goMenu  = () => setScreen('mainMenu');
   const refresh = () => { setRefreshTrigger(n => n + 1); setScreen('home'); setEditingEntry(null); };
 
+  // ── 안드로이드 하드웨어 뒤로가기 버튼 처리 ──
+  useEffect(() => {
+    if (Platform.OS !== 'android') return;
+    const backAction = () => {
+      if (screen === 'mainMenu') {
+        Alert.alert('앱 종료', '앱을 종료하시겠습니까?', [
+          { text: '취소', style: 'cancel' },
+          { text: '확인', onPress: () => BackHandler.exitApp() },
+        ]);
+        return true;
+      }
+      if (screen === 'home') { setScreen('mainMenu'); return true; }
+      if (screen === 'newEntry' || screen === 'editEntry') { setScreen('home'); return true; }
+      if (screen === 'import' || screen === 'help' || screen === 'about') { setScreen('mainMenu'); return true; }
+      if (screen === 'privacy') { setScreen('about'); return true; }
+      return false;
+    };
+    const subscription = BackHandler.addEventListener('hardwareBackPress', backAction);
+    return () => subscription.remove();
+  }, [screen]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── 앱이 백그라운드로 전환될 때 자동 백업 ──
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (nextState) => {
+      if (nextState === 'background') {
+        autoBackup();
+      }
+    });
+    return () => subscription.remove();
+  }, []);
+
   const handleHomeNavigate = (s) => {
     if (s === 'mainMenu') { goMenu(); return; }
     setScreen(s);
@@ -122,7 +154,7 @@ function AppContent() {
         <NewEntryScreen onBack={() => setScreen('home')} onSaved={refresh} initialData={editingEntry} />
       )}
       {screen === 'help'    && <HelpScreen    onBack={goMenu} />}
-      {screen === 'about'   && <AboutScreen   onBack={goMenu} onNavigate={setScreen} />}
+      {screen === 'about'   && <AboutScreen   onBack={goMenu} onNavigate={setScreen} onRestored={refresh} />}
       {screen === 'privacy' && <PrivacyPolicyScreen onBack={() => setScreen('about')} />}
     </>
   );

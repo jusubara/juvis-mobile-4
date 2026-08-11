@@ -1,4 +1,5 @@
 import * as SQLite from 'expo-sqlite';
+import { autoBackup } from './autoBackup';
 
 export interface LogbookEntry {
   id: string;
@@ -284,6 +285,7 @@ export async function insertEntry(entry: LogbookEntry): Promise<void> {
       entry.sort_order ?? null, entry.created_at ?? null,
     ]
   );
+  autoBackup();
 }
 
 export async function insertEntries(entries: LogbookEntry[]): Promise<void> {
@@ -487,12 +489,14 @@ export async function mergeImportEntries(
 
   const result = { inserted: newEntries.length, updated: overwrite ? duplicates.length : 0 };
   console.log(`[Import] merge done — inserted: ${result.inserted}, updated: ${result.updated}`);
+  autoBackup();
   return result;
 }
 
 export async function deleteEntry(id: string): Promise<void> {
   const db = await getDatabase();
   await db.runAsync('DELETE FROM logbook WHERE id = ?', [id]);
+  autoBackup();
 }
 
 export async function updateEntry(
@@ -508,6 +512,7 @@ export async function updateEntry(
     ...values,
     id,
   ]);
+  autoBackup();
 }
 
 // ─── Time utilities ───────────────────────────────────────────────────────────
@@ -725,6 +730,40 @@ export async function setAppSetting(key: string, value: string): Promise<void> {
 }
 
 // ─── 샘플 데이터 (Apple 심사 대응용 데모) ────────────────────────────────────
+// ─── Crew autocomplete ────────────────────────────────────────────────────────
+
+export async function getDistinctCrewNames(): Promise<string[]> {
+  const db = await getDatabase();
+  const rows = await db.getAllAsync<{ crew: string }>(
+    "SELECT crew FROM logbook WHERE crew IS NOT NULL AND crew != ''"
+  );
+  const names = new Set<string>();
+  for (const row of rows) {
+    try {
+      const members = JSON.parse(row.crew) as { name: string; duty: string }[];
+      for (const m of members) {
+        if (m.name) names.add(m.name);
+      }
+    } catch {}
+  }
+  return Array.from(names).sort();
+}
+
+export async function getLastDutyForName(name: string): Promise<string> {
+  const db = await getDatabase();
+  const rows = await db.getAllAsync<{ crew: string }>(
+    "SELECT crew FROM logbook WHERE crew IS NOT NULL AND crew != '' ORDER BY date DESC, sort_order DESC"
+  );
+  for (const row of rows) {
+    try {
+      const members = JSON.parse(row.crew) as { name: string; duty: string }[];
+      const member = members.find((m) => m.name === name);
+      if (member?.duty) return member.duty;
+    } catch {}
+  }
+  return '';
+}
+
 export async function insertSampleData(): Promise<void> {
   const now = new Date().toISOString();
   const samples: LogbookEntry[] = [
