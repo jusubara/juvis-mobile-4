@@ -1,5 +1,5 @@
 import * as SQLite from 'expo-sqlite';
-import { autoBackup } from './autoBackup';
+import { scheduleAutoBackup } from './autoBackup';
 
 export interface LogbookEntry {
   id: string;
@@ -234,6 +234,17 @@ export async function getAllEntries(): Promise<LogbookEntry[]> {
   );
 }
 
+// 백업용: ramp_out/ramp_in 제외, date/sort_order ASC 정렬(buildCsv 추가 정렬 불필요)
+export async function getAllEntriesForBackup(): Promise<LogbookEntry[]> {
+  const db = await getDatabase();
+  return db.getAllAsync<LogbookEntry>(
+    `SELECT id, date, ac_type, ac_ident, flt_no, from_apt, to_apt,
+       pic, picus, cop, ip, tr, block, night, inst, app_type,
+       to_d, to_n, ld_d, ld_n, remark, crew, created_at, sort_order
+     FROM logbook ORDER BY date ASC, sort_order ASC`
+  );
+}
+
 export async function getNextSortOrder(): Promise<number> {
   const db = await getDatabase();
   const result = await db.getAllAsync<{ max_so: number | null }>(
@@ -285,7 +296,7 @@ export async function insertEntry(entry: LogbookEntry): Promise<void> {
       entry.sort_order ?? null, entry.created_at ?? null,
     ]
   );
-  autoBackup();
+  scheduleAutoBackup();
 }
 
 export async function insertEntries(entries: LogbookEntry[]): Promise<void> {
@@ -489,14 +500,14 @@ export async function mergeImportEntries(
 
   const result = { inserted: newEntries.length, updated: overwrite ? duplicates.length : 0 };
   console.log(`[Import] merge done — inserted: ${result.inserted}, updated: ${result.updated}`);
-  autoBackup();
+  scheduleAutoBackup();
   return result;
 }
 
 export async function deleteEntry(id: string): Promise<void> {
   const db = await getDatabase();
   await db.runAsync('DELETE FROM logbook WHERE id = ?', [id]);
-  autoBackup();
+  scheduleAutoBackup();
 }
 
 export async function updateEntry(
@@ -512,7 +523,7 @@ export async function updateEntry(
     ...values,
     id,
   ]);
-  autoBackup();
+  scheduleAutoBackup();
 }
 
 // ─── Time utilities ───────────────────────────────────────────────────────────
@@ -693,6 +704,32 @@ export async function runMigrationCrewFromRemarkIfNeeded(): Promise<void> {
   console.log('[Migration] crew_from_remark_v2 complete —', updates.length, 'rows updated');
 }
 
+// ─── One-time migration: sort_order / date 인덱스 추가 ────────────────────────
+// 수천 건 이상 쌓였을 때 ORDER BY sort_order ASC / WHERE date LIKE 쿼리가
+// 풀 테이블 스캔을 하는 문제를 해결.
+
+export async function runMigrationAddIndexesIfNeeded(): Promise<void> {
+  const db = await getDatabase();
+
+  const done = await db.getAllAsync<{ name: string }>(
+    "SELECT name FROM migrations WHERE name = 'add_indexes_v1'"
+  );
+  if (done.length > 0) return;
+
+  console.log('[Migration] running add_indexes_v1...');
+  await db.execAsync(
+    'CREATE INDEX IF NOT EXISTS idx_logbook_sort_order ON logbook(sort_order)'
+  );
+  await db.execAsync(
+    'CREATE INDEX IF NOT EXISTS idx_logbook_date ON logbook(date)'
+  );
+  await db.runAsync(
+    "INSERT INTO migrations (name, run_at) VALUES ('add_indexes_v1', ?)",
+    [new Date().toISOString()]
+  );
+  console.log('[Migration] add_indexes_v1 complete');
+}
+
 export async function updateSortOrders(
   items: { id: string; sort_order: number }[]
 ): Promise<void> {
@@ -730,6 +767,94 @@ export async function setAppSetting(key: string, value: string): Promise<void> {
 }
 
 // ─── 샘플 데이터 (Apple 심사 대응용 데모) ────────────────────────────────────
+// ─── 개발용 더미 데이터 생성 (대용량 성능 테스트) ────────────────────────────
+
+export async function generateDummyData(count: number = 5000): Promise<void> {
+  console.log(`[DummyData] generating ${count} entries...`);
+  const db = await getDatabase();
+  const startSo = await getNextSortOrder();
+
+  const AC_IDENTS = ['HL8374', 'HL8375', 'HL8507', 'HL8545', 'HL8578', 'HL8587', 'HL8715', 'HL8716'];
+  const ROUTES: [string, string][] = [
+    ['ICN', 'CJU'], ['ICN', 'NRT'], ['ICN', 'PVG'],
+    ['GMP', 'CJU'], ['ICN', 'HND'], ['ICN', 'BKK'],
+  ];
+  const FLT_NOS = ['101', '102', '201', '202', '501', '502', '701', '702'];
+
+  // 3년 전부터 날짜 채움 (하루 최대 4편)
+  const baseDate = new Date();
+  baseDate.setFullYear(baseDate.getFullYear() - 3);
+  const currentDate = new Date(baseDate);
+  let flightsToday = 0;
+  const now = new Date().toISOString();
+
+  const entries: LogbookEntry[] = [];
+  for (let i = 0; i < count; i++) {
+    if (flightsToday >= 4) {
+      flightsToday = 0;
+      currentDate.setDate(currentDate.getDate() + 1);
+    }
+    flightsToday++;
+
+    const ident = AC_IDENTS[i % AC_IDENTS.length];
+    const [from, to] = ROUTES[i % ROUTES.length];
+    const blockH = 1 + (i % 6);
+    const blockM = (i * 7) % 60;
+    const block = `${blockH}+${String(blockM).padStart(2, '0')}`;
+    const y = currentDate.getFullYear();
+    const mo = String(currentDate.getMonth() + 1).padStart(2, '0');
+    const d = String(currentDate.getDate()).padStart(2, '0');
+
+    entries.push({
+      id: generateId(),
+      date: `${y}-${mo}-${d}`,
+      ac_type: ident.startsWith('HL87') ? 'B38M' : 'B738',
+      ac_ident: ident,
+      flt_no: FLT_NOS[i % FLT_NOS.length],
+      from_apt: from,
+      to_apt: to,
+      pic: block, picus: '', cop: '', ip: '', tr: '',
+      block,
+      night: blockH > 3 ? `0+${String(blockM).padStart(2, '0')}` : '',
+      inst: '',
+      app_type: i % 3 === 0 ? 'ILS' : '',
+      to_d: 1, to_n: 0, ld_d: 1, ld_n: 0,
+      remark: '',
+      crew: i % 5 === 0 ? JSON.stringify([{ name: '테스트승무원', duty: 'F' }]) : '',
+      ramp_out: '', ramp_in: '',
+      sort_order: startSo + i,
+      created_at: now,
+    });
+  }
+
+  // 200건 단위 배치 트랜잭션 — 한 번에 너무 많은 runAsync를 하나의 트랜잭션에 넣으면
+  // JS bridge 큐에서 오랫동안 블록되므로 적당한 크기로 나눔
+  const BATCH = 200;
+  for (let start = 0; start < entries.length; start += BATCH) {
+    const batch = entries.slice(start, start + BATCH);
+    await db.withTransactionAsync(async () => {
+      for (const e of batch) {
+        await db.runAsync(
+          `INSERT OR REPLACE INTO logbook
+            (id, date, ac_type, ac_ident, flt_no, from_apt, to_apt,
+             pic, picus, cop, ip, tr, block, night, inst, app_type,
+             to_d, to_n, ld_d, ld_n, remark, crew, ramp_out, ramp_in,
+             sort_order, created_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          [
+            e.id, e.date, e.ac_type, e.ac_ident, e.flt_no, e.from_apt, e.to_apt,
+            e.pic, e.picus, e.cop, e.ip, e.tr, e.block, e.night, e.inst, e.app_type,
+            e.to_d, e.to_n, e.ld_d, e.ld_n, e.remark, e.crew,
+            e.ramp_out, e.ramp_in, e.sort_order, e.created_at,
+          ]
+        );
+      }
+    });
+    console.log(`[DummyData] ${Math.min(start + BATCH, count)}/${count} inserted`);
+  }
+  console.log(`[DummyData] done — ${count} entries`);
+}
+
 // ─── Crew autocomplete ────────────────────────────────────────────────────────
 
 export async function getDistinctCrewNames(): Promise<string[]> {
@@ -751,8 +876,14 @@ export async function getDistinctCrewNames(): Promise<string[]> {
 
 export async function getLastDutyForName(name: string): Promise<string> {
   const db = await getDatabase();
+  // SQL-level 사전 필터: crew JSON에 해당 이름이 포함된 행만 최대 20건 조회
+  // (LIKE 패턴은 JSON 문자열 근사 매칭 → JS에서 정확 매칭)
   const rows = await db.getAllAsync<{ crew: string }>(
-    "SELECT crew FROM logbook WHERE crew IS NOT NULL AND crew != '' ORDER BY date DESC, sort_order DESC"
+    `SELECT crew FROM logbook
+     WHERE crew LIKE ?
+     ORDER BY date DESC, sort_order DESC
+     LIMIT 20`,
+    [`%"name":"${name}"%`]
   );
   for (const row of rows) {
     try {

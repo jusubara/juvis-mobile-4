@@ -5,7 +5,7 @@ import { StatusBar } from 'expo-status-bar';
 import * as SplashScreen from 'expo-splash-screen';
 
 import { runMigrationSeedFltRouteDbIfNeeded } from './src/lib/database';
-import { autoBackup } from './src/lib/autoBackup';
+import { autoBackupNow } from './src/lib/autoBackup';
 import UpdatePopup     from './src/components/UpdatePopup';
 import SplashScreen_   from './src/screens/SplashScreen';
 import MainMenuScreen  from './src/screens/MainMenuScreen';
@@ -120,7 +120,7 @@ function AppContent() {
   useEffect(() => {
     const subscription = AppState.addEventListener('change', (nextState) => {
       if (nextState === 'background') {
-        autoBackup();
+        autoBackupNow();
       }
     });
     return () => subscription.remove();

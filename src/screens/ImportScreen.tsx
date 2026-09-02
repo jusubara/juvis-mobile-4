@@ -377,13 +377,9 @@ export default function ImportScreen({ onBack, onImported }: Props) {
             onPress={handleImport}
             disabled={importing}
           >
-            {importing ? (
-              <ActivityIndicator color={BG} />
-            ) : (
-              <Text style={s.importBtnText}>
-                {filteredEntries.length}개 기록 가져오기
-              </Text>
-            )}
+            <Text style={s.importBtnText}>
+              {filteredEntries.length}개 기록 가져오기
+            </Text>
           </TouchableOpacity>
         )}
 
@@ -421,6 +417,16 @@ export default function ImportScreen({ onBack, onImported }: Props) {
           onKeep={() => handleMergeConfirm(false)}
           onOverwrite={() => handleMergeConfirm(true)}
         />
+      )}
+
+      {/* ─── 파싱/병합 로딩 오버레이 ─── */}
+      {importing && (
+        <View style={s.loadingOverlay} pointerEvents="box-only">
+          <View style={s.loadingBox}>
+            <ActivityIndicator size="large" color={RED} />
+            <Text style={s.loadingOverlayText}>비행 기록을 불러오는 중입니다...</Text>
+          </View>
+        </View>
       )}
     </SafeAreaView>
   );
@@ -461,12 +467,40 @@ const s = StyleSheet.create({
   },
   fileName: { color: TEXT, fontSize: 13, flex: 1 },
 
-  // Loading
+  // Loading (inline)
   loadingRow: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
     gap: 10, paddingVertical: 20,
   },
   loadingText: { color: TEXT_DIM, fontSize: 13 },
+
+  // Loading overlay
+  loadingOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(255,255,255,0.88)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 100,
+  },
+  loadingBox: {
+    backgroundColor: BG,
+    borderRadius: 16,
+    paddingVertical: 28,
+    paddingHorizontal: 36,
+    alignItems: 'center',
+    gap: 14,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.12,
+    shadowRadius: 12,
+    elevation: 8,
+  },
+  loadingOverlayText: {
+    color: TEXT,
+    fontSize: 14,
+    fontWeight: '600',
+    textAlign: 'center',
+  },
 
   // Date filter
   filterLabel: { fontSize: 10, color: TEXT_DIM, fontWeight: '700', textTransform: 'uppercase' },

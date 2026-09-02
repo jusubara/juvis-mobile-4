@@ -19,6 +19,18 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: '1.3.1',
+    date: '2026-09-02',
+    changes: [
+      '대량 비행 기록(수천 건 이상) 환경에서 저장이 느려지거나 실패하던 문제 수정',
+      '자동 백업 최적화: 3초 디바운스 방식으로 변경 (연속 저장 시 중복 백업 방지)',
+      '앱 백그라운드 전환 시 즉시 백업 실행 보장',
+      '안드로이드 자동 백업: 내부 캐시 우선 기록 후 SAF 폴더로 복사, SAF 실패 시 캐시에서 복원 가능',
+      '편조 이름 자동완성 검색 속도 개선 (SQL 사전 필터링)',
+      'sort_order / date 컬럼 인덱스 추가 (목록 로딩 속도 향상)',
+    ],
+  },
+  {
     version: '1.3.0',
     date: '2026-08-11',
     changes: [

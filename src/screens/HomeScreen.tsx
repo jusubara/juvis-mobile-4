@@ -1,8 +1,9 @@
 import React, { useEffect, useState, useMemo, useCallback, useRef } from 'react';
 import {
   View, Text, TouchableOpacity, StyleSheet, Modal, TextInput,
-  ActivityIndicator, Alert, ScrollView, PanResponder,
+  ActivityIndicator, Alert, ScrollView, FlatList, PanResponder,
   LayoutAnimation, UIManager, Platform, Image, Animated, InteractionManager,
+  ListRenderItemInfo,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
@@ -20,8 +21,11 @@ import {
   runMigrationReverseSortOrderIfNeeded,
   runMigrationFixSortOrderGlobalIfNeeded,
   runMigrationCrewFromRemarkIfNeeded,
+  runMigrationAddIndexesIfNeeded,
   insertSampleData,
+  generateDummyData,
 } from '../lib/database';
+import { setupAutoBackupOnBackground } from '../lib/autoBackup';
 
 
 // ─── Brand Colors ──────────────────────────────────────────────────────────────
@@ -428,15 +432,15 @@ function DragHandleIcon() {
 
 // ─── Table row ────────────────────────────────────────────────────────────────
 
-function EntryRow({
-  entry, rowIndex, isDragged, isAnyDragActive, onPress,
+const EntryRow = React.memo(function EntryRow({
+  entry, rowIndex, isDragged, isAnyDragActive, onPressItem,
   onDragStart, onDragMove, onDragEnd,
 }: {
   entry: LogbookEntry;
   rowIndex: number;
   isDragged: boolean;
   isAnyDragActive: boolean;
-  onPress: () => void;
+  onPressItem: (entry: LogbookEntry) => void;
   onDragStart: (fromIdx: number) => void;
   onDragMove: (dy: number) => void;
   onDragEnd: (dy: number) => void;
@@ -466,7 +470,7 @@ function EntryRow({
   const activateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const rowIndexRef = useRef(rowIndex);
   const isAnyDragActiveRef = useRef(isAnyDragActive);
-  const onPressRef = useRef(onPress);
+  const onPressItemRef = useRef(onPressItem);
   const onDragStartRef = useRef(onDragStart);
   const onDragMoveRef = useRef(onDragMove);
   const onDragEndRef = useRef(onDragEnd);
@@ -474,7 +478,7 @@ function EntryRow({
   // Keep refs current; freeze rowIndex once drag starts
   if (!isDragActiveRef.current) rowIndexRef.current = rowIndex;
   isAnyDragActiveRef.current = isAnyDragActive;
-  onPressRef.current = onPress;
+  onPressItemRef.current = onPressItem;
   onDragStartRef.current = onDragStart;
   onDragMoveRef.current = onDragMove;
   onDragEndRef.current = onDragEnd;
@@ -564,7 +568,7 @@ function EntryRow({
           activateTimerRef.current = null;
           if (!isDragActiveRef.current) {
             console.log('[Tap] onPress — rowIndex:', rowIndexRef.current);
-            onPressRef.current();
+            onPressItemRef.current(entry);
           }
         }
         // Edge case: long-press fired but no move events (finger held still, then released).
@@ -602,7 +606,7 @@ function EntryRow({
       </Animated.View>
     </Animated.View>
   );
-}
+});
 
 // ─── Main ────────────────────────────────────────────────────────────────────
 
@@ -628,6 +632,7 @@ export default function HomeScreen({ onNavigate, onEdit, refreshTrigger }: Props
       await runMigrationReverseSortOrderIfNeeded();
       await runMigrationFixSortOrderGlobalIfNeeded();
       await runMigrationCrewFromRemarkIfNeeded();
+      await runMigrationAddIndexesIfNeeded();
       const data = await getAllEntries();
       setAllEntries(data);
       if (data.length > 0 && !selectedYear) {
@@ -642,6 +647,9 @@ export default function HomeScreen({ onNavigate, onEdit, refreshTrigger }: Props
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => { loadAll(); }, [loadAll, refreshTrigger]);
+
+  // 앱 백그라운드 전환 시 즉시 백업 — 한 번만 등록
+  useEffect(() => { setupAutoBackupOnBackground(); }, []);
 
   const availableYears = useMemo(() => {
     const s = new Set(allEntries.map(getYear).filter(Boolean));
@@ -741,7 +749,29 @@ export default function HomeScreen({ onNavigate, onEdit, refreshTrigger }: Props
     }
   };
 
-  const handleDelete = async (entry: LogbookEntry) => {
+  const handleGenerateDummy = async () => {
+    if (!__DEV__) return;
+    Alert.alert(
+      '더미 데이터 생성',
+      '5,000건의 테스트 데이터를 생성합니다. 시간이 걸릴 수 있습니다.',
+      [
+        { text: '취소', style: 'cancel' },
+        {
+          text: '생성', onPress: async () => {
+            try {
+              await generateDummyData(5000);
+              await loadAll();
+              Alert.alert('완료', '5,000건 생성 완료');
+            } catch (e) {
+              Alert.alert('오류', String(e));
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  const handleDelete = useCallback(async (entry: LogbookEntry) => {
     Alert.alert(
       '삭제',
       `${entry.flt_no || entry.date} 기록을 삭제하시겠습니까?`,
@@ -756,7 +786,7 @@ export default function HomeScreen({ onNavigate, onEdit, refreshTrigger }: Props
         },
       ]
     );
-  };
+  }, []);
 
   // ─── Drag-and-drop reorder ────────────────────────────────────────────────────
 
@@ -856,6 +886,63 @@ export default function HomeScreen({ onNavigate, onEdit, refreshTrigger }: Props
       [...idToSortOrder.entries()].map(([id, sort_order]) => ({ id, sort_order }))
     );
   }, [filteredEntries, allEntries, sortDesc]);
+
+  // ─── FlatList helpers ─────────────────────────────────────────────────────────
+
+  const getItemLayout = useCallback((_: unknown, index: number) => ({
+    length: ROW_HEIGHT,
+    offset: ROW_HEIGHT * index,
+    index,
+  }), []);
+
+  const handlePressEntry = useCallback((entry: LogbookEntry) => {
+    Alert.alert(
+      entry.flt_no || entry.date || '기록',
+      undefined,
+      [
+        { text: '수정', onPress: () => onEdit(entry) },
+        { text: '삭제', style: 'destructive', onPress: () => handleDelete(entry) },
+        { text: '취소', style: 'cancel' },
+      ]
+    );
+  }, [onEdit, handleDelete]);
+
+  const renderItem = useCallback(({ item: entry, index }: ListRenderItemInfo<LogbookEntry>) => (
+    <EntryRow
+      entry={entry}
+      rowIndex={index}
+      isDragged={dragInfo !== null && entry.id === filteredEntries[dragInfo.fromIdx]?.id}
+      isAnyDragActive={dragInfo !== null}
+      onPressItem={handlePressEntry}
+      onDragStart={handleDragStart}
+      onDragMove={handleDragMove}
+      onDragEnd={handleDragEndCommit}
+    />
+  ), [dragInfo, filteredEntries, handlePressEntry, handleDragStart, handleDragMove, handleDragEndCommit]);
+
+  const footerRowEl = useMemo(() => (
+    filteredEntries.length > 0 ? (
+      <View style={s.footerRow}>
+        <Text style={[s.tf, { width: COL.drag + COL.date + COL.type + COL.ident + COL.flt + COL.from + COL.to, textAlign: 'left', paddingLeft: 6, fontSize: 9 }]} numberOfLines={1}>
+          TOTALS ({filteredEntries.length})
+        </Text>
+        <Text style={[s.tf, { width: COL.pic, fontSize: 10 }]} numberOfLines={1}>{filteredStats.pic !== '—' ? filteredStats.pic : ''}</Text>
+        <Text style={[s.tf, { width: COL.picus, fontSize: 10 }]} numberOfLines={1}>{filteredStats.picus !== '—' ? filteredStats.picus : ''}</Text>
+        <Text style={[s.tf, { width: COL.cop, fontSize: 10 }]} numberOfLines={1}>{filteredStats.cop !== '—' ? filteredStats.cop : ''}</Text>
+        <Text style={[s.tf, { width: COL.ip, fontSize: 10 }]} numberOfLines={1}>{filteredStats.ip !== '—' ? filteredStats.ip : ''}</Text>
+        <Text style={[s.tf, { width: COL.tr, fontSize: 10 }]} numberOfLines={1}>{filteredStats.tr !== '—' ? filteredStats.tr : ''}</Text>
+        <Text style={[s.tf, { width: COL.block, fontSize: 10 }]} numberOfLines={1}>{filteredStats.block !== '—' ? filteredStats.block : ''}</Text>
+        <Text style={[s.tf, { width: COL.night, fontSize: 10 }]} numberOfLines={1}>{filteredStats.night !== '—' ? filteredStats.night : ''}</Text>
+        <Text style={[s.tf, { width: COL.inst, fontSize: 10 }]} numberOfLines={1}>{filteredStats.inst !== '—' ? filteredStats.inst : ''}</Text>
+        <Text style={[s.tf, { width: COL.app }]} />
+        <Text style={[s.tf, { width: COL.tod }]} numberOfLines={1}>{filteredStats.toDay || ''}</Text>
+        <Text style={[s.tf, { width: COL.ton }]} numberOfLines={1}>{filteredStats.toNight || ''}</Text>
+        <Text style={[s.tf, { width: COL.ldd }]} numberOfLines={1}>{filteredStats.ldDay || ''}</Text>
+        <Text style={[s.tf, { width: COL.ldn }]} numberOfLines={1}>{filteredStats.ldNight || ''}</Text>
+        <Text style={[s.tf, { width: COL.remark }]} />
+      </View>
+    ) : null
+  ), [filteredEntries.length, filteredStats]);
 
   // ─── CSV Export ──────────────────────────────────────────────────────────────
 
@@ -966,7 +1053,7 @@ export default function HomeScreen({ onNavigate, onEdit, refreshTrigger }: Props
     <SafeAreaView style={s.container}>
       <AppHeader onBack={() => onNavigate('mainMenu')} />
 
-      <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false} scrollEnabled={!dragInfo}>
+      <View style={{ flex: 1 }}>
 
         {/* ─── Year / Month Filter ─── */}
         <View style={s.filterSection}>
@@ -1083,11 +1170,16 @@ export default function HomeScreen({ onNavigate, onEdit, refreshTrigger }: Props
                     <Text style={s.sampleBtnText}>샘플 데이터로 둘러보기</Text>
                   </TouchableOpacity>
                 )}
+                {__DEV__ && (
+                  <TouchableOpacity style={[s.sampleBtn, { borderColor: '#9333EA', backgroundColor: '#FAF5FF', marginTop: 8 }]} onPress={handleGenerateDummy}>
+                    <Text style={[s.sampleBtnText, { color: '#7E22CE' }]}>[DEV] 더미 5,000건 생성</Text>
+                  </TouchableOpacity>
+                )}
               </>
             )}
           </View>
         ) : (
-          <ScrollView horizontal showsHorizontalScrollIndicator>
+          <ScrollView horizontal showsHorizontalScrollIndicator style={{ flex: 1 }}>
             <View>
               <View style={s.tableHeader}>
                 <Text style={[s.th, { width: COL.drag }]} />
@@ -1113,57 +1205,25 @@ export default function HomeScreen({ onNavigate, onEdit, refreshTrigger }: Props
                 <Text style={[s.th, { width: COL.remark, textAlign: 'left', paddingLeft: 3 }]}>REMARK</Text>
               </View>
 
-              {displayEntries.map((entry, index) => (
-                <EntryRow
-                  key={entry.id}
-                  entry={entry}
-                  rowIndex={index}
-                  isDragged={dragInfo !== null && entry.id === filteredEntries[dragInfo.fromIdx]?.id}
-                  isAnyDragActive={dragInfo !== null}
-                  onPress={() => {
-                    Alert.alert(
-                      entry.flt_no || entry.date || '기록',
-                      undefined,
-                      [
-                        { text: '수정', onPress: () => onEdit(entry) },
-                        { text: '삭제', style: 'destructive', onPress: () => handleDelete(entry) },
-                        { text: '취소', style: 'cancel' },
-                      ]
-                    );
-                  }}
-                  onDragStart={handleDragStart}
-                  onDragMove={handleDragMove}
-                  onDragEnd={handleDragEndCommit}
-                />
-              ))}
-
-              {filteredEntries.length > 0 && (
-                <View style={s.footerRow}>
-                  <Text style={[s.tf, { width: COL.drag + COL.date + COL.type + COL.ident + COL.flt + COL.from + COL.to, textAlign: 'left', paddingLeft: 6, fontSize: 9 }]} numberOfLines={1}>
-                    TOTALS ({filteredEntries.length})
-                  </Text>
-                  <Text style={[s.tf, { width: COL.pic, fontSize: 10 }]} numberOfLines={1}>{filteredStats.pic !== '—' ? filteredStats.pic : ''}</Text>
-                  <Text style={[s.tf, { width: COL.picus, fontSize: 10 }]} numberOfLines={1}>{filteredStats.picus !== '—' ? filteredStats.picus : ''}</Text>
-                  <Text style={[s.tf, { width: COL.cop, fontSize: 10 }]} numberOfLines={1}>{filteredStats.cop !== '—' ? filteredStats.cop : ''}</Text>
-                  <Text style={[s.tf, { width: COL.ip, fontSize: 10 }]} numberOfLines={1}>{filteredStats.ip !== '—' ? filteredStats.ip : ''}</Text>
-                  <Text style={[s.tf, { width: COL.tr, fontSize: 10 }]} numberOfLines={1}>{filteredStats.tr !== '—' ? filteredStats.tr : ''}</Text>
-                  <Text style={[s.tf, { width: COL.block, fontSize: 10 }]} numberOfLines={1}>{filteredStats.block !== '—' ? filteredStats.block : ''}</Text>
-                  <Text style={[s.tf, { width: COL.night, fontSize: 10 }]} numberOfLines={1}>{filteredStats.night !== '—' ? filteredStats.night : ''}</Text>
-                  <Text style={[s.tf, { width: COL.inst, fontSize: 10 }]} numberOfLines={1}>{filteredStats.inst !== '—' ? filteredStats.inst : ''}</Text>
-                  <Text style={[s.tf, { width: COL.app }]} />
-                  <Text style={[s.tf, { width: COL.tod }]} numberOfLines={1}>{filteredStats.toDay || ''}</Text>
-                  <Text style={[s.tf, { width: COL.ton }]} numberOfLines={1}>{filteredStats.toNight || ''}</Text>
-                  <Text style={[s.tf, { width: COL.ldd }]} numberOfLines={1}>{filteredStats.ldDay || ''}</Text>
-                  <Text style={[s.tf, { width: COL.ldn }]} numberOfLines={1}>{filteredStats.ldNight || ''}</Text>
-                  <Text style={[s.tf, { width: COL.remark }]} />
-                </View>
-              )}
+              <FlatList
+                data={displayEntries}
+                keyExtractor={(item) => item.id}
+                renderItem={renderItem}
+                scrollEnabled={!dragInfo}
+                nestedScrollEnabled
+                windowSize={5}
+                maxToRenderPerBatch={20}
+                initialNumToRender={20}
+                removeClippedSubviews={Platform.OS === 'android'}
+                getItemLayout={getItemLayout}
+                ListFooterComponent={footerRowEl}
+                contentContainerStyle={{ paddingBottom: 120 }}
+              />
             </View>
           </ScrollView>
         )}
 
-        <View style={{ height: 120 }} />
-      </ScrollView>
+      </View>
 
       {/* ─── Bottom Buttons ─── */}
       <View style={s.bottomBar}>
