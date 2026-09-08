@@ -1,16 +1,17 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   View, Text, TextInput, TouchableOpacity, StyleSheet,
   ScrollView, Alert, Modal,
   KeyboardAvoidingView, Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import {
   insertEntry, updateEntry, generateId,
   parseTimeToMinutes, minutesToTimeStr, halfTime,
   lookupRoute, saveRoute, getNextSortOrder, getDistinctIdents,
-  getDistinctCrewNames, getLastDutyForName,
+  getDistinctCrewNames, getLastDutyForName, getDistinctAcTypes, getIdentAcTypeMap,
   LogbookEntry,
 } from '../lib/database';
 
@@ -38,7 +39,9 @@ const AC_TYPE_MAP: Record<string, string> = {
 };
 
 const APP_TYPE_OPTIONS = ['', 'ILS', 'RNP', 'VOR', 'LDA', 'VISUAL'];
-const APP_SUFFIX_OPTIONS = ['', 'Z', 'Y', 'X', 'W', 'V', 'A'];
+const APP_SUFFIX_OPTIONS = ['', 'A', 'V', 'W', 'X', 'Y', 'Z'];
+const STORAGE_KEY_CUSTOM_APP_TYPES = 'custom_app_types_v1';
+const STORAGE_KEY_CUSTOM_SUFFIXES = 'custom_suffixes_v1';
 const DUTY_CODES = ['', 'C', 'F', 'EC', 'EF', 'A', 'L', 'H', 'K', 'M', 'O', 'R'];
 
 const PILOTING_TYPES = [
@@ -299,12 +302,26 @@ const pd = StyleSheet.create({
 
 // ─── SheetPicker (bottom sheet modal picker) ──────────────────────────────────
 
+const SHEET_ITEM_H = 49; // paddingVertical:14*2 + lineHeight≈20 + border≈1
+
 function SheetPicker({
-  visible, title, options, value, onSelect, onClose,
+  visible, title, options, value, onSelect, onClose, onAddOption,
 }: {
   visible: boolean; title: string; options: string[]; value: string;
-  onSelect: (v: string) => void; onClose: () => void;
+  onSelect: (v: string) => void; onClose: () => void; onAddOption?: () => void;
 }) {
+  const scrollRef = useRef<ScrollView>(null);
+
+  useEffect(() => {
+    if (!visible) return;
+    const idx = options.indexOf(value);
+    if (idx < 0) return;
+    // sheet maxHeight 65% of screen — approximate visible scroll area as 400px
+    const visibleH = 400;
+    const y = Math.max(0, idx * SHEET_ITEM_H - visibleH / 2 + SHEET_ITEM_H / 2);
+    setTimeout(() => scrollRef.current?.scrollTo({ y, animated: false }), 50);
+  }, [visible]); // eslint-disable-line react-hooks/exhaustive-deps
+
   return (
     <Modal visible={visible} transparent animationType="slide">
       <View style={sp.overlay}>
@@ -315,7 +332,7 @@ function SheetPicker({
               <Text style={sp.closeBtn}>닫기</Text>
             </TouchableOpacity>
           </View>
-          <ScrollView>
+          <ScrollView ref={scrollRef}>
             {options.map((opt) => (
               <TouchableOpacity
                 key={opt || '__empty__'}
@@ -327,6 +344,14 @@ function SheetPicker({
                 </Text>
               </TouchableOpacity>
             ))}
+            {onAddOption && (
+              <TouchableOpacity
+                style={sp.option}
+                onPress={() => { onClose(); onAddOption(); }}
+              >
+                <Text style={[sp.optionText, { color: BLUE, fontWeight: '700' }]}>+ 추가</Text>
+              </TouchableOpacity>
+            )}
           </ScrollView>
         </View>
       </View>
@@ -464,13 +489,42 @@ export default function NewEntryScreen({ onBack, onSaved, initialData }: Props) 
   const [pastIdents, setPastIdents] = useState<string[]>([]);
   const [identSugg, setIdentSugg] = useState<string[]>([]);
 
+  // ── A/C TYPE 자동완성 + 동적 ident→type 맵 ──
+  const [pastAcTypes, setPastAcTypes] = useState<string[]>([]);
+  const [acTypeSugg, setAcTypeSugg] = useState<string[]>([]);
+  const [dbIdentTypeMap, setDbIdentTypeMap] = useState<Record<string, string>>({});
+  const identTypeMap = useMemo(() => ({ ...AC_TYPE_MAP, ...dbIdentTypeMap }), [dbIdentTypeMap]);
+
   // ── Crew 이름 자동완성 ──
   const [allCrewNames, setAllCrewNames] = useState<string[]>([]);
   const [crewSuggIdx, setCrewSuggIdx] = useState<number | null>(null);
   const [crewSuggestions, setCrewSuggestions] = useState<string[]>([]);
 
+  // ── APP TYPE / SUFFIX 사용자 정의 옵션 ──
+  const [customAppTypes, setCustomAppTypes] = useState<string[]>([]);
+  const [customSuffixes, setCustomSuffixes] = useState<string[]>([]);
+  const [addOptionContext, setAddOptionContext] = useState<'appType' | 'suffix' | null>(null);
+  const [addOptionInput, setAddOptionInput] = useState('');
+
+  const appTypeOptions = useMemo(
+    () => [...APP_TYPE_OPTIONS, ...customAppTypes],
+    [customAppTypes]
+  );
+  const appSuffixOptions = useMemo(() => {
+    const all = [...new Set([...APP_SUFFIX_OPTIONS.filter(Boolean), ...customSuffixes])].sort().reverse();
+    return ['', ...all];
+  }, [customSuffixes]);
+
   useEffect(() => {
     getDistinctIdents().then(setPastIdents).catch(() => {});
+    getDistinctAcTypes().then(setPastAcTypes).catch(() => {});
+    getIdentAcTypeMap().then(setDbIdentTypeMap).catch(() => {});
+    AsyncStorage.getItem(STORAGE_KEY_CUSTOM_APP_TYPES)
+      .then(v => { if (v) setCustomAppTypes(JSON.parse(v)); })
+      .catch(() => {});
+    AsyncStorage.getItem(STORAGE_KEY_CUSTOM_SUFFIXES)
+      .then(v => { if (v) setCustomSuffixes(JSON.parse(v)); })
+      .catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -484,10 +538,46 @@ export default function NewEntryScreen({ onBack, onSaved, initialData }: Props) 
     setIdentSugg(pool.filter(id => id.startsWith(q) && id !== q).slice(0, 6));
   }, [acIdent, pastIdents]);
 
+  useEffect(() => {
+    const q = acType.toUpperCase().trim();
+    if (q.length < 2) { setAcTypeSugg([]); return; }
+    setAcTypeSugg(pastAcTypes.filter(t => t.toUpperCase().startsWith(q) && t.toUpperCase() !== q).slice(0, 6));
+  }, [acType, pastAcTypes]);
+
   // Auto-fill AC type from ident
   useEffect(() => {
-    if (acIdent && AC_TYPE_MAP[acIdent]) setAcType(AC_TYPE_MAP[acIdent]);
-  }, [acIdent]);
+    if (acIdent && identTypeMap[acIdent]) setAcType(identTypeMap[acIdent]);
+  }, [acIdent, identTypeMap]);
+
+  // ── APP TYPE / SUFFIX 사용자 옵션 추가 처리 ──
+  function handleAddOptionConfirm() {
+    const val = addOptionInput.trim().toUpperCase();
+    if (!val || !addOptionContext) { setAddOptionContext(null); setAddOptionInput(''); return; }
+    if (addOptionContext === 'appType') {
+      const allOptions = [...APP_TYPE_OPTIONS, ...customAppTypes];
+      if (!allOptions.includes(val)) {
+        const next = [...customAppTypes, val];
+        setCustomAppTypes(next);
+        AsyncStorage.setItem(STORAGE_KEY_CUSTOM_APP_TYPES, JSON.stringify(next)).catch(() => {});
+      }
+      setAppType(val);
+    } else {
+      const allOptions = [...APP_SUFFIX_OPTIONS, ...customSuffixes];
+      if (!allOptions.includes(val)) {
+        const next = [...customSuffixes, val];
+        setCustomSuffixes(next);
+        AsyncStorage.setItem(STORAGE_KEY_CUSTOM_SUFFIXES, JSON.stringify(next)).catch(() => {});
+      }
+      setAppSuffix(val);
+    }
+    setAddOptionContext(null);
+    setAddOptionInput('');
+  }
+
+  function openAddOption(ctx: 'appType' | 'suffix') {
+    setAddOptionInput('');
+    setAddOptionContext(ctx);
+  }
 
   // ── Piloting type selection logic (same as web) ──
   function selectPilotingType(key: string) {
@@ -607,6 +697,10 @@ export default function NewEntryScreen({ onBack, onSaved, initialData }: Props) 
       } else {
         await insertEntry(entry);
       }
+      // 새로 저장한 ident-type 쌍을 동적 맵에 즉시 반영
+      if (entry.ac_ident && entry.ac_type) {
+        setDbIdentTypeMap(prev => ({ ...prev, [entry.ac_ident!]: entry.ac_type! }));
+      }
       onSaved();
     } catch (e) {
       Alert.alert('오류', `저장 실패: ${String(e)}`);
@@ -709,10 +803,10 @@ export default function NewEntryScreen({ onBack, onSaved, initialData }: Props) 
                       <TouchableOpacity
                         key={s}
                         style={f.suggItem}
-                        onPress={() => { setAcIdent(s); if (AC_TYPE_MAP[s]) setAcType(AC_TYPE_MAP[s]); setIdentSugg([]); }}
+                        onPress={() => { setAcIdent(s); if (identTypeMap[s]) setAcType(identTypeMap[s]); setIdentSugg([]); }}
                       >
                         <Text style={f.suggText}>{s.startsWith('HL') ? s.slice(2) : s}</Text>
-                        {AC_TYPE_MAP[s] ? <Text style={f.suggSub}>{AC_TYPE_MAP[s]}</Text> : null}
+                        {identTypeMap[s] ? <Text style={f.suggSub}>{identTypeMap[s]}</Text> : null}
                       </TouchableOpacity>
                     ))}
                   </View>
@@ -722,12 +816,25 @@ export default function NewEntryScreen({ onBack, onSaved, initialData }: Props) 
                 <Text style={f.label}>A/C TYPE</Text>
                 <TextInput
                   value={acType}
-                  onChangeText={setAcType}
+                  onChangeText={v => { setAcType(v.toUpperCase()); }}
                   placeholder="B738"
                   placeholderTextColor="#BBB"
                   autoCapitalize="characters"
                   style={f.input}
                 />
+                {acTypeSugg.length > 0 && (
+                  <View style={f.suggBox}>
+                    {acTypeSugg.map(t => (
+                      <TouchableOpacity
+                        key={t}
+                        style={f.suggItem}
+                        onPress={() => { setAcType(t); setAcTypeSugg([]); }}
+                      >
+                        <Text style={f.suggText}>{t}</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                )}
               </View>
             </View>
           </Section>
@@ -971,18 +1078,20 @@ export default function NewEntryScreen({ onBack, onSaved, initialData }: Props) 
       <SheetPicker
         visible={appTypePickerOpen}
         title="APP TYPE 선택"
-        options={APP_TYPE_OPTIONS}
+        options={appTypeOptions}
         value={appType}
         onSelect={setAppType}
         onClose={() => setAppTypePickerOpen(false)}
+        onAddOption={() => openAddOption('appType')}
       />
       <SheetPicker
         visible={appSuffixPickerOpen}
         title="SUFFIX 선택"
-        options={APP_SUFFIX_OPTIONS}
+        options={appSuffixOptions}
         value={appSuffix}
         onSelect={setAppSuffix}
         onClose={() => setAppSuffixPickerOpen(false)}
+        onAddOption={() => openAddOption('suffix')}
       />
       <SheetPicker
         visible={dutyPickerIdx !== null}
@@ -992,6 +1101,40 @@ export default function NewEntryScreen({ onBack, onSaved, initialData }: Props) 
         onSelect={(v) => { if (dutyPickerIdx !== null) updateCrew(dutyPickerIdx, 'duty', v); }}
         onClose={() => setDutyPickerIdx(null)}
       />
+
+      {/* 사용자 정의 옵션 추가 모달 */}
+      <Modal visible={addOptionContext !== null} transparent animationType="fade">
+        <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'center', alignItems: 'center' }}>
+          <View style={{ backgroundColor: BG, borderRadius: 14, padding: 20, width: '80%', gap: 14 }}>
+            <Text style={{ fontSize: 16, fontWeight: '700', color: TEXT }}>
+              {addOptionContext === 'appType' ? 'APP TYPE 추가' : 'SUFFIX 추가'}
+            </Text>
+            <TextInput
+              value={addOptionInput}
+              onChangeText={v => setAddOptionInput(v.toUpperCase())}
+              placeholder={addOptionContext === 'appType' ? 'ex) NDB' : 'ex) C'}
+              placeholderTextColor="#BBB"
+              autoCapitalize="characters"
+              autoFocus
+              style={[f.input, { fontSize: 16 }]}
+            />
+            <View style={{ flexDirection: 'row', gap: 10 }}>
+              <TouchableOpacity
+                style={{ flex: 1, paddingVertical: 12, borderRadius: 8, borderWidth: 1, borderColor: BORDER, alignItems: 'center' }}
+                onPress={() => { setAddOptionContext(null); setAddOptionInput(''); }}
+              >
+                <Text style={{ color: TEXT_DIM, fontWeight: '600' }}>취소</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={{ flex: 1, paddingVertical: 12, borderRadius: 8, backgroundColor: RED, alignItems: 'center' }}
+                onPress={handleAddOptionConfirm}
+              >
+                <Text style={{ color: BG, fontWeight: '700' }}>추가</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }

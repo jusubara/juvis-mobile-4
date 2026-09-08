@@ -24,6 +24,7 @@ import {
   runMigrationAddIndexesIfNeeded,
   insertSampleData,
   generateDummyData,
+  generateDummyDataByYearRange,
 } from '../lib/database';
 import { setupAutoBackupOnBackground } from '../lib/autoBackup';
 
@@ -372,6 +373,9 @@ function AppHeader({ onBack }: { onBack: () => void }) {
 
 // ─── Dropdown ─────────────────────────────────────────────────────────────────
 
+const DROPDOWN_ITEM_H = 41; // paddingVertical:12*2 + lineHeight≈17
+const DROPDOWN_MAX_H = 320; // dropdownMenu maxHeight
+
 function Dropdown({
   value, options, labels, onSelect, width = 100,
 }: {
@@ -379,7 +383,17 @@ function Dropdown({
   onSelect: (v: string) => void; width?: number;
 }) {
   const [open, setOpen] = useState(false);
+  const scrollRef = useRef<ScrollView>(null);
   const displayLabel = labels ? labels[options.indexOf(value)] ?? value : value;
+
+  useEffect(() => {
+    if (!open) return;
+    const idx = options.indexOf(value);
+    if (idx < 0) return;
+    const y = Math.max(0, idx * DROPDOWN_ITEM_H - DROPDOWN_MAX_H / 2 + DROPDOWN_ITEM_H / 2);
+    setTimeout(() => scrollRef.current?.scrollTo({ y, animated: false }), 0);
+  }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
+
   return (
     <>
       <TouchableOpacity style={[s.dropdown, { width }]} onPress={() => setOpen(true)}>
@@ -387,21 +401,24 @@ function Dropdown({
         <Text style={s.dropdownArrow}>▾</Text>
       </TouchableOpacity>
       <Modal visible={open} transparent animationType="fade">
-        <TouchableOpacity style={s.modalOverlay} activeOpacity={1} onPress={() => setOpen(false)}>
+        <View style={s.modalOverlay}>
+          <TouchableOpacity style={StyleSheet.absoluteFill} activeOpacity={1} onPress={() => setOpen(false)} />
           <View style={[s.dropdownMenu, { minWidth: width }]}>
-            {options.map((opt, i) => (
-              <TouchableOpacity
-                key={opt || '_all'}
-                style={[s.dropdownItem, opt === value && s.dropdownItemActive]}
-                onPress={() => { onSelect(opt); setOpen(false); }}
-              >
-                <Text style={[s.dropdownItemText, opt === value && s.dropdownItemTextActive]}>
-                  {labels ? labels[i] : opt}
-                </Text>
-              </TouchableOpacity>
-            ))}
+            <ScrollView ref={scrollRef} bounces={false} showsVerticalScrollIndicator>
+              {options.map((opt, i) => (
+                <TouchableOpacity
+                  key={opt || '_all'}
+                  style={[s.dropdownItem, opt === value && s.dropdownItemActive]}
+                  onPress={() => { onSelect(opt); setOpen(false); }}
+                >
+                  <Text style={[s.dropdownItemText, opt === value && s.dropdownItemTextActive]}>
+                    {labels ? labels[i] : opt}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
           </View>
-        </TouchableOpacity>
+        </View>
       </Modal>
     </>
   );
@@ -652,8 +669,12 @@ export default function HomeScreen({ onNavigate, onEdit, refreshTrigger }: Props
   useEffect(() => { setupAutoBackupOnBackground(); }, []);
 
   const availableYears = useMemo(() => {
-    const s = new Set(allEntries.map(getYear).filter(Boolean));
-    return Array.from(s).sort().reverse();
+    const nums = allEntries.map(e => Number(getYear(e))).filter(n => n > 0);
+    const minYear = nums.length > 0 ? Math.min(2008, Math.min(...nums)) : 2008;
+    const maxYear = nums.length > 0 ? Math.max(new Date().getFullYear(), Math.max(...nums)) : new Date().getFullYear();
+    const years: string[] = [];
+    for (let y = maxYear; y >= minYear; y--) years.push(String(y));
+    return years;
   }, [allEntries]);
 
   const yearOptions = useMemo(() => ['', ...availableYears], [availableYears]);
@@ -762,6 +783,28 @@ export default function HomeScreen({ onNavigate, onEdit, refreshTrigger }: Props
               await generateDummyData(5000);
               await loadAll();
               Alert.alert('완료', '5,000건 생성 완료');
+            } catch (e) {
+              Alert.alert('오류', String(e));
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  const handleGenerateDummyByYear = async () => {
+    if (!__DEV__) return;
+    Alert.alert(
+      '연도별 테스트 데이터 생성',
+      '2008~2026년, 연도당 3건씩 총 57건을 생성합니다.',
+      [
+        { text: '취소', style: 'cancel' },
+        {
+          text: '생성', onPress: async () => {
+            try {
+              const count = await generateDummyDataByYearRange(2008, 2026, 3);
+              await loadAll();
+              Alert.alert('완료', `${count}건 생성 완료 (2008–2026)`);
             } catch (e) {
               Alert.alert('오류', String(e));
             }
@@ -1173,6 +1216,11 @@ export default function HomeScreen({ onNavigate, onEdit, refreshTrigger }: Props
                 {__DEV__ && (
                   <TouchableOpacity style={[s.sampleBtn, { borderColor: '#9333EA', backgroundColor: '#FAF5FF', marginTop: 8 }]} onPress={handleGenerateDummy}>
                     <Text style={[s.sampleBtnText, { color: '#7E22CE' }]}>[DEV] 더미 5,000건 생성</Text>
+                  </TouchableOpacity>
+                )}
+                {__DEV__ && (
+                  <TouchableOpacity style={[s.sampleBtn, { borderColor: '#0369A1', backgroundColor: '#F0F9FF', marginTop: 8 }]} onPress={handleGenerateDummyByYear}>
+                    <Text style={[s.sampleBtnText, { color: '#0369A1' }]}>[DEV] 연도별 테스트 데이터 생성 (2008–2026)</Text>
                   </TouchableOpacity>
                 )}
               </>

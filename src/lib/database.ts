@@ -273,6 +273,24 @@ export async function getDistinctIdents(): Promise<string[]> {
   return rows.map((r) => r.ac_ident);
 }
 
+export async function getDistinctAcTypes(): Promise<string[]> {
+  const db = await getDatabase();
+  const rows = await db.getAllAsync<{ ac_type: string }>(
+    "SELECT DISTINCT ac_type FROM logbook WHERE ac_type IS NOT NULL AND ac_type != '' ORDER BY ac_type"
+  );
+  return rows.map((r) => r.ac_type);
+}
+
+export async function getIdentAcTypeMap(): Promise<Record<string, string>> {
+  const db = await getDatabase();
+  const rows = await db.getAllAsync<{ ac_ident: string; ac_type: string }>(
+    "SELECT ac_ident, ac_type FROM logbook WHERE ac_ident IS NOT NULL AND ac_ident != '' AND ac_type IS NOT NULL AND ac_type != '' GROUP BY ac_ident ORDER BY rowid DESC"
+  );
+  const map: Record<string, string> = {};
+  for (const r of rows) if (!map[r.ac_ident]) map[r.ac_ident] = r.ac_type;
+  return map;
+}
+
 export async function insertEntry(entry: LogbookEntry): Promise<void> {
   const db = await getDatabase();
   await db.runAsync(
@@ -853,6 +871,85 @@ export async function generateDummyData(count: number = 5000): Promise<void> {
     console.log(`[DummyData] ${Math.min(start + BATCH, count)}/${count} inserted`);
   }
   console.log(`[DummyData] done — ${count} entries`);
+}
+
+export async function generateDummyDataByYearRange(
+  fromYear = 2008,
+  toYear = 2026,
+  perYear = 3,
+): Promise<number> {
+  const db = await getDatabase();
+  const startSo = await getNextSortOrder();
+
+  const AC_IDENTS = ['HL8374', 'HL8507', 'HL8545', 'HL8578', 'HL8541', 'HL8542', 'HL8715', 'HL8716'];
+  const ROUTES: [string, string][] = [
+    ['ICN', 'CJU'], ['GMP', 'CJU'], ['ICN', 'NRT'],
+    ['ICN', 'PVG'], ['ICN', 'HND'], ['ICN', 'BKK'],
+  ];
+  const FLT_NOS = ['101', '201', '301', '501', '601', '701'];
+  const APP_TYPES = ['ILS', 'RNP', 'VOR', '', ''];
+  const now = new Date().toISOString();
+
+  const entries: LogbookEntry[] = [];
+  let idx = 0;
+  for (let year = fromYear; year <= toYear; year++) {
+    for (let j = 0; j < perYear; j++) {
+      const month = String(1 + (idx % 12)).padStart(2, '0');
+      const day   = String(1 + (idx % 28)).padStart(2, '0');
+      const ident = AC_IDENTS[idx % AC_IDENTS.length];
+      const [from, to] = ROUTES[idx % ROUTES.length];
+      const blockH = 1 + (idx % 5);
+      const blockM = (idx * 11) % 60;
+      const block  = `${blockH}+${String(blockM).padStart(2, '0')}`;
+      const acType = ['HL8541','HL8542','HL8715','HL8716'].includes(ident) ? 'B38M' : 'B738';
+      entries.push({
+        id: generateId(),
+        date: `${year}-${month}-${day}`,
+        ac_type: acType,
+        ac_ident: ident,
+        flt_no: FLT_NOS[idx % FLT_NOS.length],
+        from_apt: from,
+        to_apt: to,
+        pic: block, picus: '', cop: '', ip: '', tr: '',
+        block,
+        night: blockH >= 4 ? `0+${String(blockM).padStart(2, '0')}` : '',
+        inst: '',
+        app_type: APP_TYPES[idx % APP_TYPES.length],
+        to_d: 1, to_n: 0, ld_d: 1, ld_n: 0,
+        remark: `연도범위 테스트 ${year}`,
+        crew: '',
+        ramp_out: '', ramp_in: '',
+        sort_order: startSo + idx,
+        created_at: now,
+      });
+      idx++;
+    }
+  }
+
+  const BATCH = 100;
+  for (let start = 0; start < entries.length; start += BATCH) {
+    const batch = entries.slice(start, start + BATCH);
+    await db.withTransactionAsync(async () => {
+      for (const e of batch) {
+        await db.runAsync(
+          `INSERT OR REPLACE INTO logbook
+            (id, date, ac_type, ac_ident, flt_no, from_apt, to_apt,
+             pic, picus, cop, ip, tr, block, night, inst, app_type,
+             to_d, to_n, ld_d, ld_n, remark, crew, ramp_out, ramp_in,
+             sort_order, created_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          [
+            e.id, e.date, e.ac_type, e.ac_ident, e.flt_no, e.from_apt, e.to_apt,
+            e.pic, e.picus, e.cop, e.ip, e.tr, e.block, e.night, e.inst, e.app_type,
+            e.to_d, e.to_n, e.ld_d, e.ld_n, e.remark, e.crew,
+            e.ramp_out, e.ramp_in, e.sort_order, e.created_at,
+          ]
+        );
+      }
+    });
+  }
+  console.log(`[DummyData] year-range done — ${entries.length} entries (${fromYear}–${toYear})`);
+  return entries.length;
 }
 
 // ─── Crew autocomplete ────────────────────────────────────────────────────────

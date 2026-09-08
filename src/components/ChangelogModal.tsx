@@ -19,6 +19,17 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: '1.3.2',
+    date: '2026-09-08',
+    changes: [
+      '연도 선택 범위를 2008년부터로 확장',
+      '기재 등록번호 입력 시 기종이 자동으로 채워지지 않던 문제 수정',
+      '기종(A/C TYPE) 자동완성 기능 추가',
+      'APP TYPE, SUFFIX 항목에 새 옵션을 직접 추가할 수 있는 기능 추가',
+      '드롭다운을 다시 열면 이전에 선택한 항목이 화면 중앙에 표시되도록 개선',
+    ],
+  },
+  {
     version: '1.3.1',
     date: '2026-09-02',
     changes: [
