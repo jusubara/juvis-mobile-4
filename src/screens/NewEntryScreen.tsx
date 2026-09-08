@@ -4,7 +4,7 @@ import {
   ScrollView, Alert, Modal,
   KeyboardAvoidingView, Platform,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import {
@@ -311,6 +311,7 @@ function SheetPicker({
   onSelect: (v: string) => void; onClose: () => void; onAddOption?: () => void;
 }) {
   const scrollRef = useRef<ScrollView>(null);
+  const insets = useSafeAreaInsets();
 
   useEffect(() => {
     if (!visible) return;
@@ -325,7 +326,7 @@ function SheetPicker({
   return (
     <Modal visible={visible} transparent animationType="slide">
       <View style={sp.overlay}>
-        <View style={sp.sheet}>
+        <View style={[sp.sheet, { paddingBottom: insets.bottom }]}>
           <View style={sp.header}>
             <Text style={sp.title}>{title}</Text>
             <TouchableOpacity onPress={onClose}>
