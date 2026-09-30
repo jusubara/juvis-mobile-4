@@ -12,8 +12,11 @@ import {
   parseTimeToMinutes, minutesToTimeStr, halfTime,
   lookupRoute, saveRoute, getNextSortOrder, getDistinctIdents,
   getDistinctCrewNames, getLastDutyForName, getDistinctAcTypes, getIdentAcTypeMap,
+  getAllEntriesForBackup,
   LogbookEntry,
 } from '../lib/database';
+import { buildCsv } from '../lib/autoBackup';
+import { isGoogleSignedIn, uploadBackupToDrive } from '../lib/googleDriveBackup';
 
 // ─── Brand Colors ──────────────────────────────────────────────────────────────
 const RED = '#DC1E28';
@@ -417,6 +420,7 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 interface Props {
   onBack: () => void;
   onSaved: () => void;
+  onNavigate?: (screen: string) => void;
   initialData?: LogbookEntry;
 }
 
@@ -424,7 +428,7 @@ interface CrewMember { name: string; duty: string; }
 
 // ─── Main ────────────────────────────────────────────────────────────────────
 
-export default function NewEntryScreen({ onBack, onSaved, initialData }: Props) {
+export default function NewEntryScreen({ onBack, onSaved, onNavigate, initialData }: Props) {
   const isEdit = !!initialData;
 
   const _appParsed = initialData ? parseAppType(initialData.app_type) : { type: '', suffix: '', rwy: '' };
@@ -669,6 +673,8 @@ export default function NewEntryScreen({ onBack, onSaved, initialData }: Props) 
   async function handleSave() {
     if (!date) { Alert.alert('입력 오류', '날짜를 입력하세요.'); return; }
     setSaving(true);
+
+    let saveSucceeded = false;
     try {
       const appTypeStr = buildAppType(appType, appSuffix, appRwy);
       const crewJson = JSON.stringify(crew.filter((c) => c.name));
@@ -702,12 +708,47 @@ export default function NewEntryScreen({ onBack, onSaved, initialData }: Props) 
       if (entry.ac_ident && entry.ac_type) {
         setDbIdentTypeMap(prev => ({ ...prev, [entry.ac_ident!]: entry.ac_type! }));
       }
-      onSaved();
+      saveSucceeded = true;
     } catch (e) {
       Alert.alert('오류', `저장 실패: ${String(e)}`);
     } finally {
       setSaving(false);
     }
+
+    if (!saveSucceeded) return;
+
+    // ── 로컬 저장 완료 후 Google Drive 백업 제안 ──
+    Alert.alert(
+      'Google Drive 백업',
+      'Google Drive에도 백업하시겠습니까?',
+      [
+        {
+          text: '확인',
+          onPress: async () => {
+            const signedIn = await isGoogleSignedIn();
+            if (!signedIn) {
+              // 로그인 안 됨: 저작권 및 문의 화면(Drive 연결)으로 이동
+              onNavigate?.('about');
+            } else {
+              try {
+                const entries = await getAllEntriesForBackup();
+                const csv = buildCsv(entries);
+                await uploadBackupToDrive(csv, 'logbook_gdrive_backup.csv');
+              } catch {
+                Alert.alert('알림', '오프라인 상태에서는 로컬 저장소에만 저장됩니다.');
+              }
+              onSaved();
+            }
+          },
+        },
+        {
+          text: '취소',
+          style: 'cancel',
+          onPress: () => onSaved(),
+        },
+      ],
+      { cancelable: false }
+    );
   }
 
   const appTypePreview = buildAppType(appType, appSuffix, appRwy);

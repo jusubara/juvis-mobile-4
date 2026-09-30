@@ -19,6 +19,14 @@ export interface ChangelogEntry {
 
 export const CHANGELOG: ChangelogEntry[] = [
   {
+    version: '1.4.0',
+    date: '2026-09-30',
+    changes: [
+      '구글 드라이브 백업/복원 기능 추가 (비행 기록 저장 시 선택적으로 Google Drive에도 백업 가능)',
+      '오프라인 상태에서는 로컬 저장소에만 안전하게 저장되도록 처리',
+    ],
+  },
+  {
     version: '1.3.2',
     date: '2026-09-08',
     changes: [

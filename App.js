@@ -149,9 +149,9 @@ function AppContent() {
         <HomeScreen onNavigate={handleHomeNavigate} onEdit={e => { setEditingEntry(e); setScreen('editEntry'); }} refreshTrigger={refreshTrigger} />
       )}
       {screen === 'import'    && <ImportScreen  onBack={goMenu} onImported={refresh} />}
-      {screen === 'newEntry'  && <NewEntryScreen onBack={() => setScreen('home')} onSaved={refresh} />}
+      {screen === 'newEntry'  && <NewEntryScreen onBack={() => setScreen('home')} onSaved={refresh} onNavigate={setScreen} />}
       {screen === 'editEntry' && editingEntry && (
-        <NewEntryScreen onBack={() => setScreen('home')} onSaved={refresh} initialData={editingEntry} />
+        <NewEntryScreen onBack={() => setScreen('home')} onSaved={refresh} onNavigate={setScreen} initialData={editingEntry} />
       )}
       {screen === 'help'    && <HelpScreen    onBack={goMenu} />}
       {screen === 'about'   && <AboutScreen   onBack={goMenu} onNavigate={setScreen} onRestored={refresh} />}

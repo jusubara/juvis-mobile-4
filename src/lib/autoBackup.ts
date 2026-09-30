@@ -46,7 +46,7 @@ export function humanizeAndroidDirUri(uri: string): string {
 // entries는 getAllEntriesForBackup()으로 date ASC, sort_order ASC 정렬된 상태로 전달.
 // 추가 정렬이 필요 없어 동기 함수로 처리.
 
-function buildCsv(entries: LogbookEntry[]): string {
+export function buildCsv(entries: LogbookEntry[]): string {
   const headers = ['id', 'date', 'ac_type', 'ac_ident', 'flt_no', 'from_apt', 'to_apt',
     'pic', 'picus', 'cop', 'ip', 'tr', 'block', 'night', 'inst', 'app_type',
     'to_d', 'to_n', 'ld_d', 'ld_n', 'remark', 'crew', 'created_at', 'sort_order'];

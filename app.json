@@ -2,7 +2,7 @@
   "expo": {
     "name": "juvismobile4",
     "slug": "juvis-mobile-4",
-    "version": "1.3.2",
+    "version": "1.4.0",
     "orientation": "portrait",
     "icon": "./assets/app-icon-1024.png",
     "userInterfaceStyle": "light",
@@ -11,13 +11,21 @@
       "resizeMode": "contain",
       "backgroundColor": "#ffffff"
     },
+    "scheme": "com.jusubara.juvismobile4",
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.jusubara.juvismobile4",
       "buildNumber": "2",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
-        "CFBundleDisplayName": "모바일 파일럿 로그북"
+        "CFBundleDisplayName": "모바일 파일럿 로그북",
+        "CFBundleURLTypes": [
+          {
+            "CFBundleURLSchemes": [
+              "com.googleusercontent.apps.912302050883-qisj5mrj1l7aj7o2v3egjenq16j3dmiq"
+            ]
+          }
+        ]
       }
     },
     "android": {
@@ -28,7 +36,16 @@
       "versionCode": 2,
       "edgeToEdgeEnabled": true,
       "package": "com.jusubara.juvismobile4",
-      "allowBackup": false
+      "allowBackup": false,
+      "intentFilters": [
+        {
+          "action": "VIEW",
+          "data": [
+            { "scheme": "com.googleusercontent.apps.912302050883-9hnf8u7ql4ve4escemmte9l1139iq13v" }
+          ],
+          "category": ["BROWSABLE", "DEFAULT"]
+        }
+      ]
     },
     "web": {
       "favicon": "./assets/favicon.png"
@@ -42,7 +59,8 @@
       "@react-native-community/datetimepicker",
       "expo-splash-screen",
       "expo-font",
-      "expo-sqlite"
+      "expo-sqlite",
+      "expo-secure-store"
     ],
     "assetBundlePatterns": [
       "**/*"

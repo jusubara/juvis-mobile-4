@@ -9,13 +9,18 @@ import ChangelogModal, { CURRENT_VERSION } from '../components/ChangelogModal';
 import ImportConfirmModal from '../components/ImportConfirmModal';
 import {
   getAndroidBackupDirUri, setAndroidBackupDirUri, getLastBackupAt,
-  humanizeAndroidDirUri, readBackupCsv,
+  humanizeAndroidDirUri, readBackupCsv, buildCsv,
 } from '../lib/autoBackup';
 import { csvToEntries } from '../lib/csv-parser';
 import {
   LogbookEntry, DuplicateEntry,
   classifyImportEntries, mergeImportEntries,
+  getAllEntriesForBackup,
 } from '../lib/database';
+import {
+  signInWithGoogle, isGoogleSignedIn, getGoogleUserEmail,
+  uploadBackupToDrive, downloadBackupFromDrive, signOutGoogle,
+} from '../lib/googleDriveBackup';
 
 const RED = '#DC1E28';
 
@@ -44,6 +49,21 @@ export default function AboutScreen({ onBack, onNavigate, onRestored }: Props) {
     duplicates: DuplicateEntry[];
   } | null>(null);
 
+  // ── Google Drive 상태 ──
+  const [gdriveSignedIn, setGdriveSignedIn] = useState(false);
+  const [gdriveEmail, setGdriveEmail] = useState<string | null>(null);
+  const [gdriveBusy, setGdriveBusy] = useState(false);
+
+  const refreshGdriveStatus = async () => {
+    const signedIn = await isGoogleSignedIn();
+    setGdriveSignedIn(signedIn);
+    if (signedIn) {
+      setGdriveEmail(await getGoogleUserEmail());
+    } else {
+      setGdriveEmail(null);
+    }
+  };
+
   useEffect(() => {
     (async () => {
       if (Platform.OS === 'android') {
@@ -52,6 +72,7 @@ export default function AboutScreen({ onBack, onNavigate, onRestored }: Props) {
         setAndroidDirLabel(dirUri ? humanizeAndroidDirUri(dirUri) : null);
       }
       setLastBackupAt(await getLastBackupAt());
+      await refreshGdriveStatus();
     })();
   }, []);
 
@@ -66,6 +87,75 @@ export default function AboutScreen({ onBack, onNavigate, onRestored }: Props) {
     } catch (e) {
       Alert.alert('오류', `자동 백업 설정 실패: ${String(e)}`);
     }
+  };
+
+  // ─── Google Drive 핸들러 ─────────────────────────────────────────────────
+
+  const handleGdriveSignIn = async () => {
+    setGdriveBusy(true);
+    try {
+      await signInWithGoogle();
+      await refreshGdriveStatus();
+    } catch (e) {
+      Alert.alert('오류', `Google 로그인 실패: ${String(e)}`);
+    } finally {
+      setGdriveBusy(false);
+    }
+  };
+
+  const handleGdriveBackupNow = async () => {
+    setGdriveBusy(true);
+    try {
+      const entries = await getAllEntriesForBackup();
+      const csv = buildCsv(entries);
+      await uploadBackupToDrive(csv, 'logbook_gdrive_backup.csv');
+      Alert.alert('완료', 'Google Drive에 백업되었습니다.');
+    } catch (e) {
+      Alert.alert('오류', `백업 실패: ${String(e)}`);
+    } finally {
+      setGdriveBusy(false);
+    }
+  };
+
+  const handleGdriveRestore = async () => {
+    setGdriveBusy(true);
+    try {
+      const csv = await downloadBackupFromDrive();
+      if (!csv) {
+        Alert.alert('알림', 'Drive에 백업 파일이 없습니다.\n먼저 백업을 한 번 실행해주세요.');
+        return;
+      }
+      const parsed = csvToEntries(csv);
+      if (parsed.entries.length === 0) {
+        Alert.alert('알림', '복원할 데이터가 없습니다.');
+        return;
+      }
+      const classified = await classifyImportEntries(parsed.entries);
+      if (classified.duplicates.length === 0) {
+        const result = await mergeImportEntries(classified.newEntries, [], false);
+        Alert.alert('복원 완료', `${result.inserted}건 추가됨`, [{ text: '확인', onPress: onRestored }]);
+      } else {
+        setConfirmData(classified);
+      }
+    } catch (e) {
+      Alert.alert('오류', `Drive 복원 실패: ${String(e)}`);
+    } finally {
+      setGdriveBusy(false);
+    }
+  };
+
+  const handleGdriveSignOut = () => {
+    Alert.alert('연결 해제', 'Google Drive 연결을 해제하시겠습니까?', [
+      { text: '취소', style: 'cancel' },
+      {
+        text: '해제',
+        style: 'destructive',
+        onPress: async () => {
+          await signOutGoogle();
+          await refreshGdriveStatus();
+        },
+      },
+    ]);
   };
 
   // ─── 백업에서 복원 ───────────────────────────────────────────────────────
@@ -184,6 +274,52 @@ export default function AboutScreen({ onBack, onNavigate, onRestored }: Props) {
             {restoring ? '복원 중...' : '백업에서 복원하기'}
           </Text>
         </TouchableOpacity>
+
+        {/* ─── Google Drive 백업 ─── */}
+        <View style={s.divider} />
+        <Text style={s.label}>Google Drive 백업</Text>
+        {!gdriveSignedIn ? (
+          <TouchableOpacity
+            style={[s.changelogBtn, { borderColor: '#34A853' }, gdriveBusy && { opacity: 0.5 }]}
+            onPress={handleGdriveSignIn}
+            disabled={gdriveBusy}
+          >
+            <Text style={[s.changelogBtnText, { color: '#34A853' }]}>
+              {gdriveBusy ? '연결 중...' : 'Google Drive 연결하기'}
+            </Text>
+          </TouchableOpacity>
+        ) : (
+          <>
+            {gdriveEmail ? (
+              <Text style={[s.line, { marginBottom: 10 }]}>연결됨: {gdriveEmail}</Text>
+            ) : null}
+            <TouchableOpacity
+              style={[s.changelogBtn, { borderColor: '#34A853', marginBottom: 8 }, gdriveBusy && { opacity: 0.5 }]}
+              onPress={handleGdriveBackupNow}
+              disabled={gdriveBusy}
+            >
+              <Text style={[s.changelogBtnText, { color: '#34A853' }]}>
+                {gdriveBusy ? '처리 중...' : '지금 백업하기'}
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[s.changelogBtn, { borderColor: '#1A73E8', marginBottom: 8 }, gdriveBusy && { opacity: 0.5 }]}
+              onPress={handleGdriveRestore}
+              disabled={gdriveBusy}
+            >
+              <Text style={[s.changelogBtnText, { color: '#1A73E8' }]}>
+                {gdriveBusy ? '처리 중...' : '드라이브에서 복원하기'}
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[s.changelogBtn, { borderColor: '#999' }, gdriveBusy && { opacity: 0.5 }]}
+              onPress={handleGdriveSignOut}
+              disabled={gdriveBusy}
+            >
+              <Text style={[s.changelogBtnText, { color: '#999' }]}>연결 해제</Text>
+            </TouchableOpacity>
+          </>
+        )}
 
         {/* ─── 개인정보처리방침 ─── */}
         <TouchableOpacity
