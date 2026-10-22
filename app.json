@@ -41,7 +41,8 @@
         {
           "action": "VIEW",
           "data": [
-            { "scheme": "com.googleusercontent.apps.912302050883-9hnf8u7ql4ve4escemmte9l1139iq13v" }
+            { "scheme": "com.googleusercontent.apps.912302050883-9hnf8u7ql4ve4escemmte9l1139iq13v" },
+            { "scheme": "com.googleusercontent.apps.912302050883-nfk3b18t0oln7au02g8vv4u38gbsmvd7" }
           ],
           "category": ["BROWSABLE", "DEFAULT"]
         }

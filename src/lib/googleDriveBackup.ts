@@ -19,8 +19,10 @@ WebBrowser.maybeCompleteAuthSession();
 // ── Google Cloud Console OAuth 클라이언트 ID ──────────────────────────────────
 // iOS 앱 타입으로 생성 (번들 ID: com.jusubara.juvismobile4)
 const IOS_CLIENT_ID = '912302050883-qisj5mrj1l7aj7o2v3egjenq16j3dmiq';
-// Android 앱 타입으로 생성 (패키지명: com.jusubara.juvismobile4 + SHA-1)
-const ANDROID_CLIENT_ID = '912302050883-9hnf8u7ql4ve4escemmte9l1139iq13v';
+// Android: 디버그 키 기준 (로컬 개발용)
+const ANDROID_CLIENT_ID_DEBUG = '912302050883-9hnf8u7ql4ve4escemmte9l1139iq13v';
+// Android: Play 앱 서명 키 기준 (스토어/프로덕션용)
+const ANDROID_CLIENT_ID_STORE = '912302050883-nfk3b18t0oln7au02g8vv4u38gbsmvd7';
 
 const DISCOVERY = {
   authorizationEndpoint: 'https://accounts.google.com/o/oauth2/v2/auth',
@@ -33,13 +35,17 @@ const SECURE_KEY_EMAIL = 'gdrive_user_email';
 const STORAGE_KEY_FILE_ID = 'gdrive_backup_file_id';
 const DRIVE_API_BASE = 'https://www.googleapis.com';
 
+function getAndroidClientId(): string {
+  return __DEV__ ? ANDROID_CLIENT_ID_DEBUG : ANDROID_CLIENT_ID_STORE;
+}
+
 function getClientId(): string {
-  return `${Platform.OS === 'ios' ? IOS_CLIENT_ID : ANDROID_CLIENT_ID}.apps.googleusercontent.com`;
+  return `${Platform.OS === 'ios' ? IOS_CLIENT_ID : getAndroidClientId()}.apps.googleusercontent.com`;
 }
 
 // Google native 클라이언트의 리다이렉트 URI = "com.googleusercontent.apps.{클라이언트ID}:/"
 function getRedirectUri(): string {
-  const id = Platform.OS === 'ios' ? IOS_CLIENT_ID : ANDROID_CLIENT_ID;
+  const id = Platform.OS === 'ios' ? IOS_CLIENT_ID : getAndroidClientId();
   return `com.googleusercontent.apps.${id}:/`;
 }
 
